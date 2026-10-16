@@ -16,6 +16,7 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.Switch;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import java.io.File;
 import java.io.IOException;
@@ -242,7 +243,9 @@ final class PsxMenu {
     private void restart(int slot) {
         File files = activity.getFilesDir();
         try {
-            if (slot >= 0) write(new File(files, AUTOLOAD_FILE), String.valueOf(slot));
+            /* The state belongs to the disc in the drive; the game boots Disc 1. */
+            int disc = PsxInput.nativeDiscCount() > 1 ? PsxInput.nativeCurrentDisc() : 0;
+            if (slot >= 0) write(new File(files, AUTOLOAD_FILE), autoloadLine(slot, disc));
             write(new File(files, RESTART_FLAG), "1");
         } catch (IOException e) {
             return;
@@ -253,22 +256,46 @@ final class PsxMenu {
         android.os.Process.killProcess(android.os.Process.myPid());
     }
 
-    /** Called when the game starts: load the state Restart saved, once. */
+    /** files/autoload_slot: "slot" or "slot disc" (0-based slot, 1-based disc; disc 0 or
+     *  missing = whatever disc boots). Written by Restart game and by the start menu's
+     *  Continue (LauncherActivity). */
+    static String autoloadLine(int slot, int disc) {
+        return disc > 0 ? slot + " " + disc : String.valueOf(slot);
+    }
+
+    /** Called when the game starts: load the state Restart or Continue asked for, once.
+     *  A state taken on another disc of a multi-disc set needs that disc in the drive
+     *  first (its slots are per disc), so it is swapped in before the load. */
     static void autoloadAfterRestart(Activity activity, View anyView) {
         File f = new File(activity.getFilesDir(), AUTOLOAD_FILE);
         if (!f.isFile()) return;
-        int slot;
+        int slot, disc = 0;
         try {
-            slot = Integer.parseInt(new String(Files.readAllBytes(f.toPath()), StandardCharsets.UTF_8).trim());
+            String[] parts = new String(Files.readAllBytes(f.toPath()), StandardCharsets.UTF_8)
+                    .trim().split("\\s+");
+            slot = Integer.parseInt(parts[0]);
+            if (parts.length > 1) disc = Integer.parseInt(parts[1]);
         } catch (IOException | NumberFormatException e) {
             slot = -1;
         }
         //noinspection ResultOfMethodCallIgnored
         f.delete();
         if (slot < 0) return;
-        final int s = slot;
+        final int s = slot, d = disc;
         /* Give the runtime time to boot; the request waits for the next frame anyway. */
-        anyView.postDelayed(() -> PsxInput.nativeRequestState(s, true), 3000);
+        anyView.postDelayed(() -> {
+            if (d < 1 || d == PsxInput.nativeCurrentDisc()) {
+                PsxInput.nativeRequestState(s, true);
+                return;
+            }
+            PsxInput.nativeRequestDiscSwap(d);
+            /* The swap runs between frames; then the slot list is the new disc's. */
+            anyView.postDelayed(() -> {
+                if (PsxInput.nativeCurrentDisc() == d) PsxInput.nativeRequestState(s, true);
+                else Toast.makeText(activity, "Disc " + d + " could not be inserted, so the "
+                        + "save state was not loaded", Toast.LENGTH_LONG).show();
+            }, 1500);
+        }, 3000);
     }
 
     /* ---- files/game.toml [video] ------------------------------------------ */

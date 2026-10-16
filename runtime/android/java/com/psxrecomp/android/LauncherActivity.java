@@ -6,6 +6,7 @@ import android.app.ProgressDialog;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.database.Cursor;
+import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.net.Uri;
@@ -14,18 +15,27 @@ import android.provider.DocumentsContract;
 import android.provider.OpenableColumns;
 import android.util.TypedValue;
 import android.view.Gravity;
+import android.text.format.DateFormat;
+import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 
+import java.io.DataInputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 import java.util.regex.Matcher;
@@ -41,6 +51,11 @@ import java.util.regex.Pattern;
  * .cue together with its track files, several .cues with their track files (a
  * multi-disc game, numbered by name), or a single .bin/.img/.iso/.chd. Memory
  * cards live elsewhere in files/ and are never touched here.
+ *
+ * Continue (shown once a save state exists) lists the game's save-state slots,
+ * newest first, and starts the game with the chosen one: it leaves
+ * files/autoload_slot for the game process, which loads it once the runtime is
+ * up (PsxMenu.autoloadAfterRestart). It only reads the state files.
  */
 public class LauncherActivity extends Activity {
     private static final int REQUEST_FILES = 81;
@@ -48,8 +63,15 @@ public class LauncherActivity extends Activity {
     private static final String PREFS = "psx_launcher";
     private static final Pattern CUE_FILE =
             Pattern.compile("^\\s*FILE\\s+(?:\"([^\"]+)\"|(\\S+))", Pattern.CASE_INSENSITIVE);
+    /* The runtime's slot files (savestate.c savestate_slot_path):
+     * <saves>/<openbios|scph1001>/state_<entry pc>[_disc<N>]_slot<NN>.pst, slot 0-based. */
+    private static final Pattern STATE_FILE =
+            Pattern.compile("state_[0-9A-Fa-f]{8}(?:_disc(\\d+))?_slot(\\d{2})\\.pst");
+    /* savestate.c: 12-byte header ("PSTH", u32 width, u32 height), then ARGB pixels. */
+    private static final int THUMB_W = 128, THUMB_H = 96;
 
     private TextView status;
+    private Button resume;
     private Button play;
     private ProgressDialog progress;
     private boolean importing;
@@ -94,9 +116,19 @@ public class LauncherActivity extends Activity {
         status.setPadding(0, (int) (8 * dp), 0, (int) (20 * dp));
         root.addView(status, wrap());
 
+        resume = new Button(this);
+        resume.setText("Continue");
+        resume.setOnClickListener(v -> chooseState());
+        root.addView(resume, button(dp));
+
         play = new Button(this);
         play.setText("Play");
-        play.setOnClickListener(v -> startGame());
+        play.setOnClickListener(v -> {
+            /* Play starts fresh: drop a Continue choice a failed start left behind. */
+            //noinspection ResultOfMethodCallIgnored
+            new File(getFilesDir(), PsxMenu.AUTOLOAD_FILE).delete();
+            startGame();
+        });
         root.addView(play, button(dp));
 
         Button select = new Button(this);
@@ -157,11 +189,159 @@ public class LauncherActivity extends Activity {
             status.setText("No game file selected yet");
             play.setEnabled(false);
         }
+        resume.setVisibility(hasGame() && !findStates().isEmpty() ? View.VISIBLE : View.GONE);
     }
 
     private void startGame() {
         if (!hasGame() || importing) return;
         startActivity(new Intent(this, PsxGameActivity.class));
+    }
+
+    /* ---- Continue: pick a save state -------------------------------------- */
+
+    /** One save-state slot file on disk. */
+    private static final class SavedState {
+        final File file;
+        final int slot;   // 0-based, as the runtime numbers it
+        final int disc;   // 1-based for multi-disc sets, 0 = single-disc naming
+        final long time;
+
+        SavedState(File file, int slot, int disc) {
+            this.file = file;
+            this.slot = slot;
+            this.disc = disc;
+            this.time = file.lastModified();
+        }
+    }
+
+    /**
+     * Every slot file the runtime has written, newest first. The runtime keeps
+     * them in a BIOS-named folder inside its save folder (files/ on Android), so
+     * files/ and the folders directly inside it are searched. When the set is
+     * scoped by disc, older unscoped files are left out: the runtime would not
+     * look for them under that name.
+     */
+    private List<SavedState> findStates() {
+        List<SavedState> found = new ArrayList<>();
+        List<File> dirs = new ArrayList<>();
+        File files = getFilesDir();
+        dirs.add(files);
+        File[] children = files.listFiles();
+        if (children != null)
+            for (File c : children)
+                if (c.isDirectory() && !c.getName().startsWith("gamedata")) dirs.add(c);
+        boolean scoped = false;
+        for (File dir : dirs) {
+            File[] list = dir.listFiles();
+            if (list == null) continue;
+            for (File f : list) {
+                Matcher m = STATE_FILE.matcher(f.getName());
+                if (!m.matches() || !f.isFile() || f.length() == 0) continue;
+                int slot = Integer.parseInt(m.group(2));
+                int disc = m.group(1) != null ? Integer.parseInt(m.group(1)) : 0;
+                if (disc > 0) scoped = true;
+                found.add(new SavedState(f, slot, disc));
+            }
+        }
+        if (scoped) {
+            List<SavedState> keep = new ArrayList<>();
+            for (SavedState s : found) if (s.disc > 0) keep.add(s);
+            found = keep;
+        }
+        Collections.sort(found, (a, b) -> Long.compare(b.time, a.time));
+        return found;
+    }
+
+    private void chooseState() {
+        if (!hasGame() || importing) return;
+        List<SavedState> states = findStates();
+        if (states.isEmpty()) {
+            refresh();
+            return;
+        }
+        float dp = getResources().getDisplayMetrics().density;
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        int pad = (int) (8 * dp);
+        list.setPadding(pad, pad, pad, pad);
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(list);
+        final AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Continue from")
+                .setView(scroll)
+                .setNegativeButton("Cancel", null)
+                .create();
+        for (SavedState s : states) {
+            View row = stateRow(s, dp);
+            row.setOnClickListener(v -> {
+                dialog.dismiss();
+                continueFrom(s);
+            });
+            list.addView(row);
+        }
+        dialog.show();
+    }
+
+    private View stateRow(SavedState s, float dp) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        int pad = (int) (6 * dp);
+        row.setPadding(pad, pad, pad, pad);
+        TypedValue ripple = new TypedValue();
+        if (getTheme().resolveAttribute(android.R.attr.selectableItemBackground, ripple, true))
+            row.setBackgroundResource(ripple.resourceId);
+
+        ImageView thumb = new ImageView(this);
+        Bitmap picture = readThumb(s.file);
+        if (picture != null) thumb.setImageBitmap(picture);
+        else thumb.setBackgroundColor(0xFF000000);
+        thumb.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        row.addView(thumb, new LinearLayout.LayoutParams((int) (96 * dp), (int) (72 * dp)));
+
+        TextView label = new TextView(this);
+        Date when = new Date(s.time);
+        String name = "Slot " + (s.slot + 1) + (s.disc > 0 ? "  ·  Disc " + s.disc : "");
+        label.setText(name + "\n" + DateFormat.getMediumDateFormat(this).format(when) + "  "
+                + DateFormat.getTimeFormat(this).format(when));
+        label.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+        label.setPadding((int) (12 * dp), 0, 0, 0);
+        row.addView(label, wrap());
+        return row;
+    }
+
+    /** The slot's .thumb picture, or null when it is missing or not the expected size. */
+    private static Bitmap readThumb(File state) {
+        String n = state.getName();
+        File f = new File(state.getParentFile(), n.substring(0, n.length() - 4) + ".thumb");
+        int pixels = THUMB_W * THUMB_H;
+        if (f.length() != 12 + 4L * pixels) return null;
+        byte[] raw = new byte[(int) f.length()];
+        try (DataInputStream in = new DataInputStream(new FileInputStream(f))) {
+            in.readFully(raw);
+        } catch (IOException e) {
+            return null;
+        }
+        ByteBuffer b = ByteBuffer.wrap(raw).order(ByteOrder.LITTLE_ENDIAN);
+        if (b.get(0) != 'P' || b.get(1) != 'S' || b.get(2) != 'T' || b.get(3) != 'H' ||
+                b.getInt(4) != THUMB_W || b.getInt(8) != THUMB_H)
+            return null;
+        int[] argb = new int[pixels];
+        b.position(12);
+        b.asIntBuffer().get(argb);
+        return Bitmap.createBitmap(argb, THUMB_W, THUMB_H, Bitmap.Config.ARGB_8888);
+    }
+
+    /** Start the game and have it load this slot as soon as it is running. */
+    private void continueFrom(SavedState s) {
+        try {
+            PsxFiles.writeText(new File(getFilesDir(), PsxMenu.AUTOLOAD_FILE),
+                    PsxMenu.autoloadLine(s.slot, s.disc));
+        } catch (IOException e) {
+            showError("Could not prepare the save state: " + e.getMessage());
+            return;
+        }
+        startGame();
     }
 
     private void pickFiles() {
