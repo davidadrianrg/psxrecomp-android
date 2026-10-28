@@ -454,13 +454,16 @@ static void android_apply_disc_swap(void)
     const int want = g_android_disc_swap_request.exchange(0);
     if (want < 1 || want > (int)g_disc_swap_paths.size()) return;
     if (want == g_android_disc_current.load()) return;
-    if (!cdrom_swap_disc(g_disc_swap_paths[(size_t)want - 1].c_str())) {
-        host_osd_push(("Disc " + std::to_string(want) + " could not be opened").c_str(), 3000);
+    /* psx_disc_tray_cycle is the one lid-cycle policy: faithful open/replace/
+     * close sequence, disc-scoped savestates and the host notification all live
+     * there (upstream replaced cdrom_swap_disc with it). */
+    const int rc = psx_disc_tray_cycle(want, PSX_DISC_TRAY_ORIGIN_MENU);
+    if (rc != PSX_DISC_TRAY_OK) {
+        host_osd_push(("Disc " + std::to_string(want) + ": " +
+                       psx_disc_tray_result_name(rc)).c_str(), 3000);
         return;
     }
     g_android_disc_current.store(want);
-    /* Savestates belong to the disc they were taken on (see the boot-time call). */
-    savestate_set_disc_scope(want);
     host_osd_push(("Disc " + std::to_string(want) + " inserted").c_str(), 2500);
 }
 
