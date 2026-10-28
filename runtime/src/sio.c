@@ -47,6 +47,12 @@ static void sio_debug_poll_maybe(void) {
  * 0 .. PSX_MAX_PLAYERS-1 (not physical SIO slot). */
 static uint16_t pad_buttons[PSX_MAX_PLAYERS] = { PSX_PAD_INIT(0xFFFF) };
 
+/* Optional Sony Mouse attached to physical port 1. The host accumulates raw
+ * relative motion; each 0x42 poll consumes up to one signed byte per axis. */
+static uint8_t psx_mouse_enabled;
+static int32_t psx_mouse_dx, psx_mouse_dy;
+static uint8_t psx_mouse_left, psx_mouse_right;
+
 /* Per-logical-pad type + analog stick state. Values are SIO_PAD_*; sticks are
  * 0..255, 0x80 centred. JogCon uses left-X as a signed wheel position; NeGcon
  * uses it as the 0..255 twist axis (0x80 centred). */
@@ -872,6 +878,8 @@ void sio_init(void) {
         pad_supports_config[i] = 1;
     }
     pad_connected = 0;
+    psx_mouse_dx = psx_mouse_dy = 0;
+    psx_mouse_left = psx_mouse_right = 0;
     /* Multitap enable/port are host preferences — leave them alone across
      * sio_init so a soft reset does not drop the tap configuration. */
     mc_state = MC_IDLE;
@@ -907,6 +915,181 @@ void sio_init(void) {
     /* Note: sio_txn_buf, sio_txn_idx, sio_txn_seq deliberately persist
      * across sio_init so post-reset diagnostics can still inspect prior
      * transactions. Boot path zero-inits them via BSS. */
+}
+
+void sio_set_mouse_enabled(int enabled) {
+    psx_mouse_enabled = enabled ? 1u : 0u;
+    psx_mouse_dx = psx_mouse_dy = 0;
+    psx_mouse_left = psx_mouse_right = 0;
+}
+
+static void psx_mouse_add_delta(int32_t *total, int delta) {
+    if (delta > 0 && *total > INT32_MAX - delta)
+        *total = INT32_MAX;
+    else if (delta < 0 && *total < INT32_MIN - delta)
+        *total = INT32_MIN;
+    else
+        *total += delta;
+}
+
+void sio_set_mouse_motion(int dx, int dy) {
+    psx_mouse_add_delta(&psx_mouse_dx, dx);
+    psx_mouse_add_delta(&psx_mouse_dy, dy);
+}
+
+void sio_set_mouse_buttons(int left_pressed, int right_pressed) {
+    psx_mouse_left = left_pressed ? 1u : 0u;
+    psx_mouse_right = right_pressed ? 1u : 0u;
+}
+
+/* Tap-to-point (Android touch, 2026-10-09). The PS1 Mouse only reports motion,
+ * so pointing at an absolute spot is done in steps the poll below plays back:
+ * a recalibrating point first pushes the cursor hard into the top-left corner
+ * (games clamp it at the screen edge, so its position is then known), then
+ * moves by exactly the target; later points while dragging move by the
+ * difference from where the last one left it. A click is pressed only after
+ * the motion has fully drained, for a few polls, so it lands on the target
+ * whatever the game's frame rate. Relative motion (D-pad, trackpad) still
+ * works; the next recalibrating point re-syncs after it. */
+static int32_t s_mpoint_steps[2][2];
+static int s_mpoint_count, s_mpoint_next;
+static int s_mpoint_click_pending, s_mpoint_click_polls;
+static int32_t s_mpoint_x, s_mpoint_y;
+static int s_mpoint_known;
+
+/* Steered mode: when the game's cursor position is known (game.toml [controller]
+ * mouse_cursor = "xaddr,yaddr,width,height", passed in by the Android overlay), each
+ * poll reads the real cursor and sends a fraction of the remaining distance, so the
+ * game's pointer acceleration and the frame rate can't make it miss (blind mode
+ * was "super inconsistent" in Policenauts, 2026-10-09: X/Y at 0x80068928/2A). */
+extern uint8_t *memory_get_ram_ptr(void);
+static uint32_t s_mcur_xaddr, s_mcur_yaddr;   /* physical RAM offsets; 0 = unknown */
+static int s_msteer_active, s_msteer_polls;
+static int32_t s_msteer_tx, s_msteer_ty;
+/* Where this steer started reading the cursor, and whether that reading ever changed.
+ * On some screens Policenauts stops updating the found address (it read 292,212 or
+ * 76,40 forever while the real cursor moved: 2026-10-09 log), so a steer whose
+ * reading never moves falls back to the blind corner-reset move for that tap. */
+static int32_t s_msteer_x0, s_msteer_y0;
+static int s_msteer_moved, s_msteer_started;
+
+void sio_mouse_cursor_addr(uint32_t xaddr, uint32_t yaddr) {
+    s_mcur_xaddr = xaddr & 0x1FFFFEu;
+    s_mcur_yaddr = yaddr & 0x1FFFFEu;
+    if (!xaddr || !yaddr) s_mcur_xaddr = s_mcur_yaddr = 0;
+}
+
+static int16_t sio_mouse_read_cursor(uint32_t off) {
+    const uint8_t *ram = memory_get_ram_ptr();
+    return (int16_t)(ram[off] | (ram[off + 1] << 8));
+}
+
+static void sio_mouse_point_blind(int x, int y, int click, int recalibrate);
+
+void sio_mouse_point(int x, int y, int click, int recalibrate) {
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+    if (s_mcur_xaddr) {
+        (void)recalibrate;                 /* the real position is read every poll */
+        psx_mouse_dx = psx_mouse_dy = 0;
+        s_mpoint_count = s_mpoint_next = 0;
+        s_msteer_tx = x;
+        s_msteer_ty = y;
+        s_msteer_active = 1;
+        s_msteer_polls = 0;
+        s_msteer_started = 0;
+        s_msteer_moved = 0;
+        if (click) s_mpoint_click_pending = 1;
+        return;
+    }
+    sio_mouse_point_blind(x, y, click, recalibrate);
+}
+
+/* Blind mode: corner reset (recalibrate) + exact move, played back by the poll. */
+static void sio_mouse_point_blind(int x, int y, int click, int recalibrate) {
+    psx_mouse_dx = psx_mouse_dy = 0;   /* drop any half-played motion */
+    s_mpoint_count = s_mpoint_next = 0;
+    if (recalibrate || !s_mpoint_known) {
+        /* Past any PS1 screen (max 640x512), so the cursor ends at the corner. */
+        s_mpoint_steps[s_mpoint_count][0] = -(x + 1024);
+        s_mpoint_steps[s_mpoint_count][1] = -(y + 1024);
+        s_mpoint_count++;
+        s_mpoint_steps[s_mpoint_count][0] = x;
+        s_mpoint_steps[s_mpoint_count][1] = y;
+        s_mpoint_count++;
+    } else if (x != s_mpoint_x || y != s_mpoint_y) {
+        s_mpoint_steps[s_mpoint_count][0] = x - s_mpoint_x;
+        s_mpoint_steps[s_mpoint_count][1] = y - s_mpoint_y;
+        s_mpoint_count++;
+    }
+    s_mpoint_x = x;
+    s_mpoint_y = y;
+    s_mpoint_known = 1;
+    if (click) s_mpoint_click_pending = 1;
+}
+
+/* Called at each mouse poll before the motion bytes are taken. */
+static void sio_mouse_point_poll(void) {
+    if (s_msteer_active) {
+        const int32_t cx = sio_mouse_read_cursor(s_mcur_xaddr);
+        const int32_t cy = sio_mouse_read_cursor(s_mcur_yaddr);
+        const int32_t ex = s_msteer_tx - cx, ey = s_msteer_ty - cy;
+        /* Stalled: the cursor hasn't moved for 4 polls while being pushed, i.e. the game
+         * clamps it short of the spot (Policenauts keeps it within 15..304 x 8..220). */
+        static int32_t last_x = -99999, last_y = -99999;
+        static int still = 0;
+        if (cx == last_x && cy == last_y) still++; else still = 0;
+        last_x = cx;
+        last_y = cy;
+        if (!s_msteer_started) { s_msteer_started = 1; s_msteer_x0 = cx; s_msteer_y0 = cy; }
+        else if (cx != s_msteer_x0 || cy != s_msteer_y0) s_msteer_moved = 1;
+        /* The reading never moved in ~10 polls (~5 frames: the game reads the mouse twice
+         * a frame and moves the cursor once) while being pushed: this screen keeps the
+         * cursor elsewhere. Do this tap blind instead (its click stays pending). */
+        if (!s_msteer_moved && s_msteer_polls >= 10 &&
+            !(ex >= -1 && ex <= 1 && ey >= -1 && ey <= 1)) {
+            still = 0;
+            s_msteer_active = 0;
+            sio_mouse_point_blind(s_msteer_tx, s_msteer_ty, 0, 1);
+            return;
+        }
+        /* Arrived, stalled, or the game isn't reading the mouse right now (~2 s): stop. */
+        if ((ex >= -1 && ex <= 1 && ey >= -1 && ey <= 1) ||
+            (s_msteer_moved && s_msteer_polls > 2 && still >= 4) ||
+            ++s_msteer_polls > 120) {
+            still = 0;
+            s_msteer_active = 0;
+            psx_mouse_dx = psx_mouse_dy = 0;
+            if (s_mpoint_click_pending && s_mpoint_click_polls == 0) {
+                s_mpoint_click_pending = 0;
+                s_mpoint_click_polls = 4;
+            }
+            return;
+        }
+        /* Half the remaining distance (at least 1), at most 48 per poll: the game
+         * may apply a poll's motion a frame late, so whole-distance steps overshoot. */
+        int32_t dx = ex / 2, dy = ey / 2;
+        if (dx == 0 && ex) dx = ex > 0 ? 1 : -1;
+        if (dy == 0 && ey) dy = ey > 0 ? 1 : -1;
+        if (dx > 48) dx = 48;
+        if (dx < -48) dx = -48;
+        if (dy > 48) dy = 48;
+        if (dy < -48) dy = -48;
+        psx_mouse_dx = dx;
+        psx_mouse_dy = dy;
+        return;
+    }
+    if (psx_mouse_dx != 0 || psx_mouse_dy != 0) return;   /* a step still draining */
+    if (s_mpoint_next < s_mpoint_count) {
+        psx_mouse_dx = s_mpoint_steps[s_mpoint_next][0];
+        psx_mouse_dy = s_mpoint_steps[s_mpoint_next][1];
+        s_mpoint_next++;
+        return;
+    }
+    if (s_mpoint_click_pending && s_mpoint_click_polls == 0) {
+        s_mpoint_click_pending = 0;
+        s_mpoint_click_polls = 4;   /* held over a few polls so a slow frame still sees it */
+    }
 }
 
 /* Cycle-budgeted precise event slicing: guest CPU cycles until SIO raises a
@@ -1330,8 +1513,11 @@ static void pad_process_byte(uint8_t tx_byte) {
     case PAD_IDLE:
         /* Standard address 01h selects Slot A (or the standalone pad). With a
          * multitap, 02h..04h select pads B–D on that port (psx-spx method 2). */
-        if (tx_byte == 0x01 && pad_port_has_device(selected_slot)) {
-            pad_active_logical = pad_logical_for_port(selected_slot);
+        if (tx_byte == 0x01 &&
+            ((psx_mouse_enabled && selected_slot == 0) ||
+             pad_port_has_device(selected_slot))) {
+            pad_active_logical = (psx_mouse_enabled && selected_slot == 0)
+                                     ? -1 : pad_logical_for_port(selected_slot);
             pad_mtap_addr = 0x01;
             pad_state = PAD_WAIT_ACCESS;
             sio_rx_data = 0xFF;
@@ -1364,6 +1550,33 @@ static void pad_process_byte(uint8_t tx_byte) {
                 pad_fill_status8(base + i, &pad_response[2 + i * 8]);
             pad_response_len = PAD_RESPONSE_MAX;
             mtap_returned[selected_slot] = MTAP_NEXT_BULK;
+            pad_state = PAD_SEND_RESPONSE;
+            sio_rx_data = pad_response[0];
+            sio_stat |= SIO_STAT_ACK;
+            break;
+        }
+        if (psx_mouse_enabled && selected_slot == 0 && pad_mtap_addr == 0x01 &&
+            tx_byte == 0x42) {
+            sio_mouse_point_poll();
+            const int point_click = s_mpoint_click_polls > 0;
+            if (s_mpoint_click_polls > 0) s_mpoint_click_polls--;
+            int32_t dx = psx_mouse_dx;
+            int32_t dy = psx_mouse_dy;
+            if (dx > 127) dx = 127;
+            if (dx < -128) dx = -128;
+            if (dy > 127) dy = 127;
+            if (dy < -128) dy = -128;
+            psx_mouse_dx -= dx;
+            psx_mouse_dy -= dy;
+            pad_response[0] = 0x12; /* Sony Mouse, four data bytes */
+            pad_response[1] = 0x5A;
+            pad_response[2] = 0xFF;
+            pad_response[3] = (uint8_t)(0xF0u |
+                (psx_mouse_right ? 0x00u : 0x04u) |
+                ((psx_mouse_left || point_click) ? 0x00u : 0x08u));
+            pad_response[4] = (uint8_t)(int8_t)dx;
+            pad_response[5] = (uint8_t)(int8_t)dy;
+            pad_response_len = 6;
             pad_state = PAD_SEND_RESPONSE;
             sio_rx_data = pad_response[0];
             sio_stat |= SIO_STAT_ACK;

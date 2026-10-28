@@ -843,6 +843,11 @@ struct RuntimeConfig {
     std::string           default_p1_device;
     std::string           default_p2_device;
 
+    // mouse: port 1 holds a Sony Mouse instead of a pad (game.toml
+    // [controller] mouse = true). The host feeds relative motion and the two
+    // buttons; sio.c answers 0x42 polls. Used by the Android trackpad layer.
+    bool                  controller_port1_mouse = false;
+
     // lock_mode: when true the launcher HIDES the whole pad-mode selector
     // (Analog | D-Pad) and forces every port to default_p1_mode. For a
     // game that supports exactly one pad type — e.g. Tomba 2, whose driver only

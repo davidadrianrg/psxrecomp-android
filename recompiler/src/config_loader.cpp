@@ -1318,6 +1318,8 @@ static RuntimeConfig parse_runtime_block(const toml::value& cfg, const fs::path&
             rt.anti_deadzone = static_cast<int>(n);
             rt.has_anti_deadzone = true;
         }
+        if (ct.contains("mouse"))
+            rt.controller_port1_mouse = toml::find<bool>(ct, "mouse");
     }
 
     return rt;

@@ -4671,6 +4671,30 @@ uint32_t gpu_display_pixel_argb(const GpuDisplayInfo* di, uint32_t x, uint32_t y
  * VRAM touches of the 16-bit path, done as a function-call chain instead of
  * a straight-line loop). Still scalar C — no host-endianness assumptions,
  * same byte-order shifts as gpu_display_pixel_rgb_in. */
+/* Batch 15-bit scanline -> ARGB. Same output as calling
+ * gpu_display_pixel_argb(di, x, y) for x in [0, count), including the opt-in
+ * screen LUT, with the per-row invariants hoisted out of the per-pixel path. */
+void gpu_rgb555_present_row(const GpuDisplayInfo* di, uint32_t y, uint32_t* out,
+                            uint32_t count) {
+    const uint16_t* row = vram + (size_t)((di->display_y + y) & 511u) * 1024u;
+    const uint32_t x0 = di->display_x;
+    uint32_t x;
+    screen_lut_ensure();
+    if (s_screen_lut) {
+        for (x = 0; x < count; x++) {
+            uint8_t r, g, b;
+            color_lut_map555(s_screen_lut, row[(x0 + x) & 1023u], &r, &g, &b);
+            out[x] = 0xFF000000u | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
+        }
+        return;
+    }
+    for (x = 0; x < count; x++) {
+        const uint32_t c = row[(x0 + x) & 1023u];
+        out[x] = 0xFF000000u | ((c & 0x1Fu) << 19) | (((c >> 5) & 0x1Fu) << 11) |
+                 (((c >> 10) & 0x1Fu) << 3);
+    }
+}
+
 void gpu_depth24_present_row(const GpuDisplayInfo* di, uint32_t y, uint32_t* out,
                              uint32_t count) {
     uint32_t vy = (di->display_y + y) & 511u;
