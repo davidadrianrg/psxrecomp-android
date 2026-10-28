@@ -162,6 +162,9 @@ static uint64_t s_fg_flips;   /* frame generation (below): game frames seen */
  * (stereo pairs, pass generations), which write nothing on Android. */
 #if defined(__ANDROID__)
 #define glGetTexImage(target, level, format, type, pixels) ((void)(pixels))
+/* GLES has no double-precision glClearDepth; glClearDepthf clears the same
+ * value (1.0f is the far plane, the only value this runtime uses). */
+#define glClearDepth(d) glClearDepthf((GLfloat)(d))
 #endif
 static int s_gles = 0;          /* context is OpenGL ES (set at context creation) */
 static int s_dual_src_ok = 1;   /* dual-source blending usable (desktop GL 3.3) */

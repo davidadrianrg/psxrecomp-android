@@ -2397,7 +2397,10 @@ function(psxrecomp_add_runtime_target target)
         if(ANDROID)
             # The OpenGL backend is kept available in the binary, even when
             # this title defaults to SDL's software presenter on Android.
-            target_link_libraries(${target} PRIVATE GLESv2)
+            # GLESv3 (API 18+) carries the ES 3.x entry points the renderer
+            # uses: glReadBuffer, glGetTexLevelParameteriv, glClearDepthf.
+            # The NDK's GLESv2 stub only exposes ES 2.0 and fails the link.
+            target_link_libraries(${target} PRIVATE GLESv2 GLESv3)
         else()
             if(NOT COMMAND recomp_resolve_gl
                AND RECOMP_UI_ROOT AND EXISTS "${RECOMP_UI_ROOT}/cmake/recomp_gl.cmake")
