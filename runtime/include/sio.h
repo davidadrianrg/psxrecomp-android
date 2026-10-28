@@ -144,19 +144,6 @@ int  sio_get_multitap_analog(void);
 void sio_set_pad_state(uint16_t buttons);
 void sio_set_pad_state_slot(int slot, uint16_t buttons);
 
-/* Sony PlayStation Mouse on physical controller port 1. Motion is accumulated
- * until the game polls it, then returned as signed 8-bit relative deltas. */
-void sio_set_mouse_enabled(int enabled);
-void sio_set_mouse_motion(int dx, int dy);
-void sio_set_mouse_buttons(int left_pressed, int right_pressed);
-/* Point the Sony Mouse cursor at (x, y) in the game's own screen pixels (Android
- * tap-to-point). recalibrate = push into the top-left corner first; click = press
- * the left button once the cursor has arrived. See sio.c. */
-void sio_mouse_point(int x, int y, int click, int recalibrate);
-/* Where the game keeps its cursor X / Y (guest addresses of signed 16-bit values):
- * sio_mouse_point then steers by the real position. 0, 0 = unknown (blind mode). */
-void sio_mouse_cursor_addr(uint32_t xaddr, uint32_t yaddr);
-
 /* Set the analog stick state + pad type for a logical pad. enabled selects the
  * emulated pad: 0 = digital (poll id 0x41), 1 = DualShock/analog (poll id
  * 0x73, with the four 0..255 stick axes appended; 0x80 = centred). */
