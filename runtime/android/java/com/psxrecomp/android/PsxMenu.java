@@ -189,6 +189,8 @@ final class PsxMenu {
         if (videoChanged) row(list, "Restart game now", this::confirmRestart);
 
         section(list, "Controls");
+        row(list, "Touch pad: " + (pad.isUserHidden() ? "Off" : "On"),
+                () -> { pad.setUserHidden(!pad.isUserHidden()); refresh(); });
         row(list, "Edit pad layout…", () -> { close(); pad.startEditing(); });
         row(list, "Pad opacity: " + pad.opacityPercent() + "%", () -> { pad.cycleOpacity(); refresh(); });
     }

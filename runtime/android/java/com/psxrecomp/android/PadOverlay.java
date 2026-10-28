@@ -168,6 +168,9 @@ public final class PadOverlay extends View {
     private int opacityStep = 0;
     /* Hidden while a physical controller is in use; any touch brings it back. */
     private boolean controllerHidden;
+    /* Menu "Touch pad" switch: the player hid the pad on purpose. Touches go to
+     * the game and only the menu brings it back (no touch-to-reveal). */
+    private boolean userHidden;
     private final RectF[] toolRects = new RectF[TOOLS.length];
 
     /**
@@ -678,6 +681,7 @@ public final class PadOverlay extends View {
     @Override
     public boolean onTouchEvent(MotionEvent event) {
         if (event.isFromSource(InputDevice.SOURCE_MOUSE)) return false;
+        if (userHidden) return false;   /* pad off: let the game see the touch */
         int action = event.getActionMasked();
         if (controllerHidden) {
             /* The touch that brings the pad back only shows it. */
@@ -1150,6 +1154,7 @@ public final class PadOverlay extends View {
                 all.put(c.id, o);
             }
             all.put("_opacity", opacityStep);
+            all.put("_hidden", userHidden);
         } catch (JSONException e) {
             return;
         }
@@ -1162,6 +1167,7 @@ public final class PadOverlay extends View {
         try {
             JSONObject all = new JSONObject(text);
             opacityStep = Math.max(0, Math.min(OPACITY.length - 1, all.optInt("_opacity", 0)));
+            userHidden = all.optBoolean("_hidden", false);
             for (Control c : controls) {
                 JSONObject o = all.optJSONObject(c.id);
                 if (o == null) continue;
@@ -1183,7 +1189,8 @@ public final class PadOverlay extends View {
 
     private void applyAlpha() {
         /* The editor itself always draws fully opaque so it stays usable. */
-        setAlpha(controllerHidden ? 0.0f : editing ? 1.0f : OPACITY[opacityStep]);
+        setAlpha((controllerHidden || userHidden) ? 0.0f
+                 : editing ? 1.0f : OPACITY[opacityStep]);
     }
 
     /**
@@ -1195,6 +1202,17 @@ public final class PadOverlay extends View {
         releaseAll();
         controllerHidden = true;
         applyAlpha();
+    }
+
+    /** Menu "Touch pad: On/Off": the pad stays hidden until turned back on. */
+    public boolean isUserHidden() { return userHidden; }
+
+    public void setUserHidden(boolean hidden) {
+        if (userHidden == hidden) return;
+        userHidden = hidden;
+        if (hidden) releaseAll();
+        applyAlpha();
+        saveLayout();
     }
 
     /** Back closes the editor first. @return true if it was open. */
