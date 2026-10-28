@@ -17711,7 +17711,7 @@ void ovl_draw(int w, int h, void*) { if (g_ovl && g_ovl->draw) g_ovl->draw(g_ovl
 
 /* Main thread, once per GL context (windowed OpenGL only). */
 #if defined(__has_include)
-#if __has_include("recomp_ui_psx_menu.h")
+#if __has_include("recomp_ui_psx_menu.h") && !defined(PSX_NO_RECOMP_UI_PROVIDER)
 #include "recomp_ui_psx_menu.h"   /* the maintained UI's provider: the default */
 #define PSX_MENU_HAS_DEFAULT_PROVIDER 1
 #endif
