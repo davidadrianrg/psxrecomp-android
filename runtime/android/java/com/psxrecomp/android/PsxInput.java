@@ -69,6 +69,9 @@ public final class PsxInput {
     /** Live post-process antialiasing (FXAA) on/off. */
     public static native void nativeSetPostAA(boolean on);
 
+    /** Live aspect ratio: 1 = 4:3, 2 = 16:9 widened canvas, 3 = 16:9 filled (stretch). */
+    public static native void nativeSetAspect(int mode);
+
     /** Whether diagnostic log is currently enabled. */
     public static native boolean nativeGetDiagLog();
 

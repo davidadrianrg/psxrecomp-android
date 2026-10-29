@@ -1181,6 +1181,8 @@ static void android_apply_fps_request(void)
 static std::atomic<int> g_android_texfilter_req{-1};
 static std::atomic<int> g_android_scale_req{-1};
 static std::atomic<int> g_android_aa_req{-1};
+/* Aspect request: 0 none, 1 = 4:3, 2 = 16:9 native-wide, 3 = 16:9 stretched. */
+static std::atomic<int> g_android_aspect_req{0};
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_psxrecomp_android_PsxInput_nativeSetTextureFilter(JNIEnv *, jclass, jint mode)
@@ -1200,7 +1202,15 @@ Java_com_psxrecomp_android_PsxInput_nativeSetPostAA(JNIEnv *, jclass, jint on)
     g_android_aa_req.store(on ? 1 : 0);
 }
 
+/* 1 = 4:3, 2 = 16:9 native-wide (widened canvas), 3 = 16:9 stretched fill. */
+extern "C" JNIEXPORT void JNICALL
+Java_com_psxrecomp_android_PsxInput_nativeSetAspect(JNIEnv *, jclass, jint mode)
+{
+    g_android_aspect_req.store(mode);
+}
+
 static void android_apply_video_requests(void);   /* defined after the globals it touches */
+static void android_apply_aspect_request(void);   /* ditto */
 #endif
 
 /* Hold-to-act host hotkeys must not fire while the game window does not hold
@@ -9940,6 +9950,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
     android_apply_state_request();
     android_apply_fps_request();
     android_apply_video_requests();
+    android_apply_aspect_request();
     android_apply_diag_log_request();
     /* Time to first frame: the start menu shows a black screen until this
      * fires, so a slow boot is measurable in logcat (tag psxrecomp). */
@@ -18095,6 +18106,41 @@ static void android_apply_video_requests(void)
     }
 }
 
+/* Aspect ratio switch (v0.5.0): 4:3 / 16:9 widened canvas / 16:9 filled, all
+ * applied between frames without restarting the game. */
+static void android_apply_aspect_request(void)
+{
+    const int req = g_android_aspect_req.exchange(0);
+    if (!req) return;
+    int num = 4, den = 3, native_wide = 0, stretch = 0;
+    if (req == 2) { num = 16; den = 9; native_wide = 1; }   /* widened canvas */
+    else if (req == 3) { stretch = 1; }                     /* fill: 4:3 squashed into 16:9 */
+    g_video_aspect_num = num;
+    g_video_aspect_den = den;
+    g_ws_native_wide = native_wide;
+    g_android_stretch_num = stretch ? 16 : 0;
+    g_android_stretch_den = stretch ? 9 : 0;
+    g_ws_engaged = (num != 4 || den != 3 || stretch);
+    /* Native-wide presents the wide canvas 1:1; the fill mode presents the
+     * canonical 4:3 picture inside a 16:9 rect (present-only stretch). */
+    gl_renderer_set_display_aspect(stretch ? 16 : num, stretch ? 9 : den);
+    vk_renderer_set_display_aspect(stretch ? 16 : num, stretch ? 9 : den);
+    gl_renderer_set_present_stretch(stretch ? 1 : 0);
+    refresh_widescreen_projection();
+    if (sdl_renderer) {
+        const int lnum = stretch ? 16 : num;
+        const int lden = stretch ? 9 : den;
+        g_logical_w = (int)((int64_t)480 * lnum * g_video_scale / lden);
+        SDL_RenderSetLogicalSize(sdl_renderer, g_logical_w, 480 * g_video_scale);
+    }
+    if (g_diag_log_file) {
+        std::fprintf(g_diag_log_file,
+                     "video-change: aspect=%d -> %d:%d native_wide=%d stretch=%d (live)\n",
+                     req, num, den, native_wide, stretch);
+        std::fflush(g_diag_log_file);
+    }
+}
+
 /* Diagnostic log file toggle implementation (defined here after all variable declarations). */
 static void android_apply_diag_log_request(void)
 {
@@ -18108,7 +18154,7 @@ static void android_apply_diag_log_request(void)
         __android_log_print(ANDROID_LOG_INFO, "psxrecomp", "diag_log fopen: %s", df ? "OK" : "FAILED");
         if (df) {
             std::fprintf(df, "=== psxrecomp diagnostic log ===\n");
-            std::fprintf(df, "Build: v0.4.9\n");
+            std::fprintf(df, "Build: v0.5.0\n");
             std::fprintf(df, "Timestamp: %lld\n", (long long)std::chrono::system_clock::now().time_since_epoch().count());
             {
                 char model[PROP_VALUE_MAX] = {0}, soc[PROP_VALUE_MAX] = {0}, abi[PROP_VALUE_MAX] = {0};

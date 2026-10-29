@@ -156,20 +156,27 @@ final class PsxMenu {
             scales.addView(b, lp);
         }
         list.addView(scales);
-        /* Aspect ratio. Real widescreen on PSX is per-game (a widescreen mod package;
-         * main.cpp "widescreen is mod-owned"). Without one, main.cpp's Android
-         * stretch widens the finished 4:3 picture at present time (2026-10-09).
-         * Read at game start, so it applies after a restart. */
+        /* Aspect ratio: applied live (no restart). 4:3 original; 16:9 widened
+         * canvas (native-wide: the engine renders beyond the 4:3 frame, some
+         * scenes stream tiles a moment late near the edges); 16:9 filled
+         * (present-only stretch, no pop-in but the picture is stretched). */
         {
-            boolean wide = "\"16:9\"".equals(video.get("aspect_ratio"));
-            list.addView(label("Aspect ratio", "16:9: campo de visión ampliado por el motor (widescreen real, " 
-                    + "sin deformar los personajes). 4:3 es el original. Reinicia el juego para aplicarlo."));
+            String ar = video.get("aspect_ratio");
+            boolean wide = "\"16:9\"".equals(ar);
+            String nw = readSectionKey("[widescreen]", "native_wide");
+            int mode = !wide ? 1 : ("true".equals(nw) ? 2 : 3);
+            list.addView(label("Aspect ratio", "4:3 original · 16:9 ampliado (renderiza más, puede tardar "
+                    + "en cargar el borde) · 16:9 relleno (estira). Se aplica al momento."));
             LinearLayout aspects = new LinearLayout(activity);
-            String[][] choices = { { "4:3", "\"4:3\"" }, { "16:9", "\"16:9\"" } };
+            String[][] choices = { { "4:3", "1" }, { "16:9 ampliado", "2" }, { "16:9 relleno", "3" } };
             for (int i = 0; i < choices.length; i++) {
-                final String value = choices[i][1];
-                TextView b = chip(choices[i][0], (i == 1) == wide);
-                b.setOnClickListener(v -> setVideo("aspect_ratio", value));
+                final int value = Integer.parseInt(choices[i][1]);
+                TextView b = chip(choices[i][0], value == mode);
+                b.setOnClickListener(v -> {
+                    PsxInput.nativeSetAspect(value);                 /* live */
+                    setSectionKey("[video]", "aspect_ratio", value == 1 ? "\"4:3\"" : "\"16:9\"");
+                    setSectionKey("[widescreen]", "native_wide", value == 2 ? "true" : "false");
+                });
                 LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, px(44), 1);
                 lp.setMargins(i == 0 ? 0 : px(6), px(6), 0, px(4));
                 aspects.addView(b, lp);
@@ -348,10 +355,70 @@ final class PsxMenu {
         return kv;
     }
 
+    /** Raw value of one key in one TOML section, or null. */
+    private String readSectionKey(String section, String key) {
+        String sec = "";
+        for (String line : readLines()) {
+            String t = line.trim();
+            if (t.startsWith("[") && t.endsWith("]")) { sec = t; continue; }
+            int eq = t.indexOf('=');
+            if (section.equals(sec) && eq > 0 && !t.startsWith("#")
+                    && t.substring(0, eq).trim().equals(key))
+                return t.substring(eq + 1).trim();
+        }
+        return null;
+    }
+
+    /** Set one key in one TOML section (raw TOML value), preserving the rest. */
+    private void setSectionKey(String section, String key, String value) {
+        String cur = readSectionKey(section, key);
+        if (cur != null && cur.equals(value)) return;
+        StringBuilder out = new StringBuilder();
+        String sec = "";
+        boolean seenSection = false, done = false;
+        for (String line : readLines()) {
+            String t = line.trim();
+            if (t.startsWith("[") && t.endsWith("]")) {
+                if (section.equals(sec) && !done) {
+                    out.append(key).append(" = ").append(value).append('\n');
+                    done = true;
+                }
+                sec = t;
+                if (section.equals(sec)) seenSection = true;
+                out.append(line).append('\n');
+                continue;
+            }
+            if (section.equals(sec)) {
+                int eq = t.indexOf('=');
+                if (eq > 0 && !t.startsWith("#") && t.substring(0, eq).trim().equals(key)) {
+                    out.append(key).append(" = ").append(value).append('\n');
+                    done = true;
+                    continue;
+                }
+            }
+            out.append(line).append('\n');
+        }
+        if (section.equals(sec) && !done) {
+            out.append(key).append(" = ").append(value).append('\n');
+            done = true;
+        }
+        if (!seenSection)
+            out.append('\n').append(section).append('\n').append(key).append(" = ").append(value).append('\n');
+        try {
+            File tmp = new File(gameToml().getPath() + ".tmp");
+            write(tmp, out.toString());
+            if (!tmp.renameTo(gameToml())) throw new IOException("rename failed");
+            videoChanged = true;
+            if (root != null) root.post(this::refresh);
+        } catch (IOException e) {
+            new AlertDialog.Builder(activity).setMessage("Could not save the setting: " + e.getMessage())
+                    .setPositiveButton("OK", null).show();
+        }
+    }
+
     /** Set one [video] key (raw TOML value), keeping every other line as it was. */
     private void setVideo(String key, String value) {
         Map<String, String> kv = readVideo();
-        if (value.equals(kv.get(key))) return;
         kv.put(key, value);
         StringBuilder out = new StringBuilder();
         boolean inVideo = false;
