@@ -18044,7 +18044,7 @@ static void android_apply_diag_log_request(void)
         __android_log_print(ANDROID_LOG_INFO, "psxrecomp", "diag_log fopen: %s", df ? "OK" : "FAILED");
         if (df) {
             std::fprintf(df, "=== psxrecomp diagnostic log ===\n");
-            std::fprintf(df, "Build: v0.4.7\n");
+            std::fprintf(df, "Build: v0.4.8\n");
             std::fprintf(df, "Timestamp: %lld\n", (long long)std::chrono::system_clock::now().time_since_epoch().count());
             {
                 char model[PROP_VALUE_MAX] = {0}, soc[PROP_VALUE_MAX] = {0}, abi[PROP_VALUE_MAX] = {0};
@@ -18057,6 +18057,7 @@ static void android_apply_diag_log_request(void)
             std::fprintf(df, "GL active: %d\n", g_gl_active);
             std::fprintf(df, "Vulkan active: %d\n", g_vk_active);
             std::fprintf(df, "Aspect ratio: %d:%d (native_wide=%d)\n", g_video_aspect_num, g_video_aspect_den, g_ws_native_wide);
+            std::fprintf(df, "WS projection mode: %d (0=4:3/off, 1=squash+stretch, 2=native-wide)\n", g_ws_projection_mode);
             std::fprintf(df, "Internal resolution (supersampling): %dx\n", g_video_scale);
             std::fprintf(df, "Texture filtering: %d (0=nearest,1=bilinear,2=xbr)\n", g_video_texfilter);
             std::fprintf(df, "Antialiasing: %s\n", g_video_aa ? "on" : "off");
@@ -18449,7 +18450,18 @@ int main(int argc, char** argv) {
      * game.toml offer flags remain parseable for old projects but deliberately
      * cannot expose generic launcher controls or activate the features. Trusted
      * activation plugins apply them after launcher/settings resolution. */
+#if defined(__ANDROID__)
+    /* Android fork (2026-10-29): this build ships a single title and there is no
+     * mod-install UI on the phone, so the framework's widescreen path is enabled
+     * from game.toml directly instead of requiring a trusted activation plugin.
+     * [widescreen] native_wide/full_2d and [video] aspect_ratio="16:9" then work
+     * exactly as on the desktop port (wider GTE field of view / widened 2D
+     * canvas, per-prim proportion correction) instead of the present-only
+     * stretch the clamped path fell back to. */
+    constexpr bool ws_offered = true;
+#else
     constexpr bool ws_offered = false;
+#endif
     constexpr bool ws_ultrawide_offered = false;
     constexpr bool frame_interpolation_offered = false;
     constexpr bool skip_fmv_offered = false;
@@ -18779,6 +18791,14 @@ int main(int argc, char** argv) {
             /* Keep titles with known native-wide regressions on the original
              * projection-squash + stretched-present widescreen path. */
             g_ws_native_wide = gc.ws_native_wide ? 1 : 0;
+#if defined(__ANDROID__)
+            /* Single-title Android port. The stored game.toml on the phone may
+             * predate the [widescreen] block, and a pure-2D title has no GTE
+             * projection to squash — the squash path would just stretch the
+             * picture. Always use native-wide here so a wider aspect widens the
+             * canvas instead of deforming it; at 4:3 the mode is inert. */
+            g_ws_native_wide = 1;
+#endif
             /* [widescreen] nw_hud_corners — push HUD to the true wide corners. */
             gpu_ws_set_nw_hud_corners(gc.ws_nw_hud_corners ? 1 : 0);
             /* Targeted left-HUD packet range — avoids shifting 2D scenery. */
