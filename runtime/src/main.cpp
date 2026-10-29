@@ -21578,6 +21578,13 @@ session_reboot:
                 cfg.source_rate = 44100.0;            /* SPU render rate */
                 cfg.host_rate   = (double)have.freq;  /* actual device rate */
                 cfg.target_ms   = (double)resolved_audio_buffer_ms;
+                /* Ring depth: the target is the latency the player asked for, but
+                 * the ring only had 80 ms of slack over it (defaults: 280 vs a
+                 * 200 ms target). One hitch — a texture upload, a surface stall,
+                 * a slow frame — empties it and the bridge fades to silence:
+                 * that is the "choppy audio". Keep the target (latency) and give
+                 * the ring room to absorb a stall. */
+                cfg.ring_ms     = cfg.target_ms + 300.0;
                 if (rab_init(&s_drc, &cfg) == 0) s_drc_ready = true;
             }
             g_audio_host_rate = have.freq;

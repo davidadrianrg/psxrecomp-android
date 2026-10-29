@@ -6703,8 +6703,15 @@ int gl_renderer_init_context(SDL_Window *win) {
     glDisable(GL_DEPTH_TEST); glDisable(GL_CULL_FACE);
     const char *ver = (const char *)glGetString(GL_VERSION);
     const char *gpu = (const char *)glGetString(0x1F01 /* GL_RENDERER */);
-    fprintf(stdout, "psxrecomp: OpenGL context created (%s; %s)\n", ver ? ver : "?",
-            gpu ? gpu : "?");
+    /* Which GL we got decides shader dialect, pixel formats and which entry
+     * points are allowed to be missing. It MUST be set before load_modern_gl()
+     * (which refuses the init without glBindFragDataLocationIndexed on desktop)
+     * and before any build_program() (which rewrites the GLSL for ES). The
+     * Android merge lost this assignment: s_gles stayed 0, the init failed on
+     * GLES and every frame silently fell back to the software rasteriser. */
+    s_gles = (ver && strstr(ver, "OpenGL ES")) ? 1 : 0;
+    fprintf(stdout, "psxrecomp: OpenGL context created (%s; %s; %s)\n", ver ? ver : "?",
+            gpu ? gpu : "?", s_gles ? "OpenGL ES" : "desktop GL");
     {
         const char *vendor = (const char *)glGetString(0x1F00 /* GL_VENDOR */);
         s_vendor_nvidia = (vendor && strstr(vendor, "NVIDIA")) ? 1 : 0;
