@@ -5140,9 +5140,19 @@ static void runtime_perf_init() {
     std::fflush(stdout);
 }
 
+/* Force the runtime perf cadence lines on (used by the Android diagnostic log):
+ * the env-var path initializes once at boot, but the menu toggle happens later. */
+static void runtime_perf_force_enabled(void) {
+    if (g_runtime_perf.enabled) return;
+    g_runtime_perf.frequency = SDL_GetPerformanceFrequency();
+    if (!g_runtime_perf.frequency) g_runtime_perf.frequency = 1;
+    if (g_runtime_perf.interval_ms == 0) g_runtime_perf.interval_ms = 2000;
+    g_runtime_perf.enabled = true;
+    g_runtime_perf.initialized = true;
+}
+
 static RuntimePerfSnapshot runtime_perf_snapshot(uint64_t now) {
     RuntimePerfSnapshot s;
-    s.counter = now;
     s.frame = s_frame_count;
     s.guest_work_ticks = g_runtime_perf.guest_work_ticks;
     s.pacer_ticks = g_runtime_perf.pacer_ticks;
@@ -5498,7 +5508,8 @@ static void runtime_perf_diag_tick() {
 
     const double dt = (double)(current.counter - last.counter) /
                       (double)g_runtime_perf.frequency;
-    std::fprintf(stdout,
+    FILE *cad_dst = g_diag_log_file ? g_diag_log_file : stdout;
+    std::fprintf(cad_dst,
         "psxrecomp: runtime cadence: guest=%.2f Hz, spu=%.1f Hz, "
         "audio_fill=%.1f ms, underruns=+%llu, overflows=+%llu, corr=%+.5f; "
         "GL upload=%.1f calls/s %.1f rect/s %.2f Mpix/s, "
@@ -5561,7 +5572,7 @@ static void runtime_perf_diag_tick() {
             (unsigned long long)passes.verify_checks,
             (unsigned long long)passes.verify_mismatch);
     }
-    std::fflush(stdout);
+    std::fflush(cad_dst);
     last = current;
     last_spu = audio.tap_frames[AUDIO_TAP_SPU_OUT];
     last_underruns = underruns;
@@ -18033,7 +18044,7 @@ static void android_apply_diag_log_request(void)
         __android_log_print(ANDROID_LOG_INFO, "psxrecomp", "diag_log fopen: %s", df ? "OK" : "FAILED");
         if (df) {
             std::fprintf(df, "=== psxrecomp diagnostic log ===\n");
-            std::fprintf(df, "Build: v0.4.6\n");
+            std::fprintf(df, "Build: v0.4.7\n");
             std::fprintf(df, "Timestamp: %lld\n", (long long)std::chrono::system_clock::now().time_since_epoch().count());
             {
                 char model[PROP_VALUE_MAX] = {0}, soc[PROP_VALUE_MAX] = {0}, abi[PROP_VALUE_MAX] = {0};
@@ -18058,6 +18069,9 @@ static void android_apply_diag_log_request(void)
             std::fprintf(df, "Render thread: %d, Present thread: %d\n", g_render_thread, g_present_thread);
             std::fflush(df);
             g_diag_log_file = df;
+            /* Also turn on the runtime cadence lines (guest vs pacer vs GPU ms,
+             * overlay native/interp, SPU rate) — they now land in this file. */
+            runtime_perf_force_enabled();
             __android_log_print(ANDROID_LOG_INFO, "psxrecomp", "diag_log started OK");
         } else {
             __android_log_print(ANDROID_LOG_ERROR, "psxrecomp", "diag_log fopen FAILED for path: %s", g_diag_log_path.c_str());
@@ -21718,6 +21732,24 @@ session_reboot:
                  * clamp lets the DRC resample slightly faster (a little sharper,
                  * which is far less noticeable than the static). */
                 cfg.max_correction = 0.18;
+#if defined(__ANDROID__)
+                /* v0.4.7: a phone that emulates below full speed (e.g. 40 fps on
+                 * a 50 Hz PAL game = 80% of real time) feeds the ring only 80%
+                 * of what the device consumes. The stock P gain (kp 0.02) can
+                 * never reach the ~-20% correction needed: it saturates around
+                 * -1.9% and the ring stays empty, so every callback fades —
+                 * heard as constant crackle/static (measured: ~14k underrun
+                 * events per second at fill 17/200 ms). Raise the gain so the
+                 * servo actually tracks the production deficit, widen the clamp
+                 * to cover up to 30% slow, and allow a faster slew so it locks
+                 * in seconds instead of minutes. The output then resamples at
+                 * the rate the game really runs (slightly deeper pitch) instead
+                 * of breaking into noise; when the game reaches full speed the
+                 * correction returns to ~0 on its own. */
+                cfg.kp             = 0.40;
+                cfg.max_correction = 0.30;
+                cfg.slew_pp_per_s  = 3.0;
+#endif
                 if (rab_init(&s_drc, &cfg) == 0) s_drc_ready = true;
             }
             g_audio_host_rate = have.freq;
