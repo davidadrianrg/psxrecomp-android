@@ -2153,6 +2153,10 @@ static int           g_video_aspect_num = 4;
 static int           g_video_aspect_den = 3;
 #if defined(__ANDROID__)
 /* Android present-only stretch (menu "16:9" without a widescreen mod); 0 = off. */
+#if defined(__ANDROID__)
+/* Process start, for the "time to first frame" boot log. */
+static std::chrono::steady_clock::time_point g_android_boot_tp;
+#endif
 static int           g_android_stretch_num = 0;
 static int           g_android_stretch_den = 0;
 /* gpu_gl_renderer.c; declared here rather than in gpu_gl_renderer.h, which is
@@ -9852,6 +9856,39 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
     android_apply_disc_swap();
     android_apply_state_request();
     android_apply_fps_request();
+    /* Time to first frame: the start menu shows a black screen until this
+     * fires, so a slow boot is measurable in logcat (tag psxrecomp). */
+    {
+        static int s_android_boot_logged = 0;
+        if (!s_android_boot_logged) {
+            s_android_boot_logged = 1;
+            const long long ms = (long long)std::chrono::duration_cast<
+                std::chrono::milliseconds>(std::chrono::steady_clock::now() - g_android_boot_tp).count();
+            __android_log_print(ANDROID_LOG_INFO, "psxrecomp",
+                                "first game frame after %lld ms", ms);
+        }
+    }
+    /* Android FPS counter: counted here, on the frame loop, instead of on the
+     * desktop title-bar telemetry block — some present paths (the GPU renderer
+     * with the present thread) never reach it and the overlay read 0. */
+    if (s_fps_telemetry_enabled) {
+        static uint32_t s_android_fps_t0 = 0;
+        static uint32_t s_android_fps_frames = 0;
+        const uint32_t now_ms = SDL_GetTicks();
+        if (s_android_fps_t0 == 0) {
+            s_android_fps_t0 = now_ms;
+            s_android_fps_frames = 0;
+        } else if (now_ms - s_android_fps_t0 >= 500) {
+            const uint32_t elapsed = now_ms - s_android_fps_t0;
+            s_android_fps_frames++;
+            g_android_game_fps_x100.store(
+                (int)((s_android_fps_frames * 100000.0f) / (float)elapsed + 0.5f));
+            s_android_fps_t0 = now_ms;
+            s_android_fps_frames = 0;
+        } else {
+            s_android_fps_frames++;
+        }
+    }
 #endif
     {
         int ready = 0;
@@ -17939,6 +17976,9 @@ int main(int argc, char** argv) {
         if (chdir(files) != 0)
             std::fprintf(stderr, "psxrecomp: chdir(%s) failed\n", files);
     }
+#endif
+#if defined(__ANDROID__)
+    g_android_boot_tp = std::chrono::steady_clock::now();
 #endif
     g_main_argc = argc;
     g_main_argv = argv;

@@ -176,9 +176,26 @@ final class PsxMenu {
         toggle(list, "Anti-aliased (smooth edges)",
                 "On: draw big, shrink back (soft). Off: keep the full size (sharp, like DuckStation's upscale).",
                 smooth, on -> setVideo("antialiasing", on ? "true" : "false"));
-        toggle(list, "Smooth textures", "Bilinear filtering instead of blocky pixels.",
-                "\"bilinear\"".equals(video.get("texture_filtering")),
-                on -> setVideo("texture_filtering", on ? "\"bilinear\"" : "\"nearest\""));
+        /* Texture filtering: three real modes. xBR is the edge-aware upscaler —
+         * the closest thing Android has to the "HD-2D" look the PC repo got from
+         * a ReShade preset. It needs the GPU renderer to show. */
+        {
+            String tf = video.get("texture_filtering");
+            list.addView(label("Texture filter",
+                    "Nearest: píxeles duros (pixel art). Bilinear: suaviza. xBR: escalado con bordes limpios."));
+            LinearLayout rowF = new LinearLayout(activity);
+            String[][] filters = { { "Nearest", "\"nearest\"" }, { "Bilinear", "\"bilinear\"" },
+                                   { "xBR", "\"xbr\"" } };
+            for (int i = 0; i < filters.length; i++) {
+                final String value = filters[i][1];
+                TextView b = chip(filters[i][0], value.equals(tf));
+                b.setOnClickListener(v -> setVideo("texture_filtering", value));
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, px(44), 1);
+                lp.setMargins(i == 0 ? 0 : px(6), px(6), 0, px(4));
+                rowF.addView(b, lp);
+            }
+            list.addView(rowF);
+        }
         toggle(list, "Perspective-correct textures", "Fixes textures that warp on floors and walls.",
                 "true".equals(video.get("perspective_texturing")),
                 on -> setVideo("perspective_texturing", on ? "true" : "false"));
