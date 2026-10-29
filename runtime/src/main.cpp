@@ -504,6 +504,11 @@ static void android_apply_state_request(void)
     const int slot = req / 2 - 1;
     const bool load = (req & 1) != 0;
     const int staged = load ? savestate_request_load(slot) : savestate_request_save(slot);
+    /* With the GPU renderer there is no OSD surface, so a refusal would be
+     * silent on screen: always leave the outcome in logcat. */
+    __android_log_print(ANDROID_LOG_INFO, "psxrecomp",
+                        "savestate %s slot=%d staged=%d",
+                        load ? "load" : "save", slot, staged);
     if (!staged)
         host_osd_push(load ? "Load state not available" : "Save state not available", 2500);
 }
@@ -22148,6 +22153,10 @@ session_reboot:
         savestate_configure(memcard_dir.string().c_str(),
                             memory_get_bios_checksum(), game_entry_pc,
                             bios_token, openbios_ws);
+#if defined(__ANDROID__)
+        __android_log_print(ANDROID_LOG_INFO, "psxrecomp",
+                            "savestate_configure dir=%s", memcard_dir.string().c_str());
+#endif
         psx_rewind_set_enabled(g_rewind_enabled);
         psx_rewind_set_depth((uint32_t)g_rewind_depth);
         psx_rewind_set_interval((uint32_t)g_rewind_interval);
