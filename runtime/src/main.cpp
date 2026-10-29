@@ -5042,6 +5042,9 @@ struct RuntimePerfState {
 
 static RuntimePerfState g_runtime_perf;
 
+/* Diagnostic log file handle (opened when PSX_DIAG_LOG=1). */
+static FILE *g_diag_log_file = nullptr;
+
 static bool runtime_perf_parse_window(const char *text, uint64_t *start,
                                       uint64_t *end) {
     if (!text || !text[0]) return false;
@@ -9888,6 +9891,12 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
             s_android_fps_frames++;
             g_android_game_fps_x100.store(
                 (int)((s_android_fps_frames * 100000.0f) / (float)elapsed + 0.5f));
+            /* Diagnostic log: write FPS every ~500ms. */
+            if (g_diag_log_file) {
+                double fps = (s_android_fps_frames * 1000.0) / (double)elapsed;
+                std::fprintf(g_diag_log_file, "FPS: %.1f\n", fps);
+                std::fflush(g_diag_log_file);
+            }
             s_android_fps_t0 = now_ms;
             s_android_fps_frames = 0;
         } else {
@@ -21585,6 +21594,14 @@ session_reboot:
                  * that is the "choppy audio". Keep the target (latency) and give
                  * the ring room to absorb a stall. */
                 cfg.ring_ms     = cfg.target_ms + 300.0;
+                /* The guest does not always run at 50 Hz: on a phone it can sit at
+                 * 43 fps (86% of real time), so the SPU feeds fewer samples than
+                 * the device consumes. With the stock +/-0.5% clamp the servo can
+                 * never catch up, the ring empties and rab_pull holds+fades every
+                 * callback — heard as constant background noise/static. A wider
+                 * clamp lets the DRC resample slightly faster (a little sharper,
+                 * which is far less noticeable than the static). */
+                cfg.max_correction = 0.18;
                 if (rab_init(&s_drc, &cfg) == 0) s_drc_ready = true;
             }
             g_audio_host_rate = have.freq;
@@ -22414,6 +22431,39 @@ session_reboot:
      * Go back to the room; do not boot the game offline. */
     if (psx_return_to_lobby_requested() && g_netplay_from_lobby)
         goto soft_return_lobby;
+
+    /* ---- Diagnostic log file (PSX_DIAG_LOG=1 + files/diag_log on Android) ---- */
+    {
+        const char *diag_log = std::getenv("PSX_DIAG_LOG");
+        if (diag_log && diag_log[0] && diag_log[0] != '0') {
+            const char *path = std::getenv("PSX_DIAG_LOG_PATH");
+            if (!path) path = "psxrecomp_diag.log";
+            FILE *df = std::fopen(path, "wb");
+            if (df) {
+                std::fprintf(df, "=== psxrecomp diagnostic log ===\n");
+                std::fprintf(df, "Build: v0.4.1\n");
+                std::fprintf(df, "Timestamp: %lld\n", (long long)std::chrono::system_clock::now().time_since_epoch().count());
+                std::fprintf(df, "Renderer: %s\n", g_video_renderer == 1 ? "opengl" : "software");
+                std::fprintf(df, "GL active: %d\n", g_gl_active);
+                std::fprintf(df, "Vulkan active: %d\n", g_vk_active);
+                std::fprintf(df, "Aspect ratio: %d:%d (native_wide=%d)\n", g_video_aspect_num, g_video_aspect_den, g_ws_native_wide);
+                std::fprintf(df, "Internal resolution (supersampling): %dx\n", g_video_scale);
+                std::fprintf(df, "Texture filtering: %d (0=nearest,1=bilinear,2=xbr)\n", g_video_texfilter);
+                std::fprintf(df, "Antialiasing: %s\n", g_video_aa ? "on" : "off");
+                std::fprintf(df, "Perspective texturing: %s\n", g_video_perspective_texturing ? "on" : "off");
+                std::fprintf(df, "DRC ring_ms: %.0f, max_correction: %.3f\n", 200.0 + 300.0, 0.18);
+                std::fprintf(df, "Audio buffer_ms: %d, spu_hq: %d\n", 200, 0);
+                std::fprintf(df, "Fast boot: %d\n", fast_boot);
+                std::fprintf(df, "Android stretch: %d:%d (active=%d)\n", g_android_stretch_num, g_android_stretch_den, (g_android_stretch_num && !g_ws_native_wide && g_video_aspect_num * 3 != g_video_aspect_den * 4) ? 1 : 0);
+                std::fprintf(df, "Widescreen engaged: %d\n", g_ws_engaged);
+                std::fprintf(df, "Render thread: %d, Present thread: %d\n", g_render_thread, g_present_thread);
+                std::fflush(df);
+                /* Store globally for per-frame logging */
+                g_diag_log_file = df;
+            }
+        }
+    }
+
     psx_scheduler_run(&cpu);
     if (psx_return_to_lobby_requested() && g_netplay_from_lobby)
         goto soft_return_lobby;
@@ -22486,6 +22536,12 @@ session_reboot:
     SDL_DestroyWindow(sdl_window);
     SDL_DestroyWindow(s_headless_gl_window);
     s_headless_gl_window = nullptr;
+    /* Close diagnostic log file. */
+    if (g_diag_log_file) {
+        std::fprintf(g_diag_log_file, "=== Session ended ===\n");
+        std::fclose(g_diag_log_file);
+        g_diag_log_file = nullptr;
+    }
     SDL_Quit();
 
     return 0;

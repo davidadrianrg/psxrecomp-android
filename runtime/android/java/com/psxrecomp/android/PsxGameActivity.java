@@ -110,6 +110,16 @@ public class PsxGameActivity extends SDLActivity {
                 // Diagnostics only; run without them.
             }
         }
+        // Opt-in diagnostic log file: files/diag_log enables detailed logging to
+        // files/psxrecomp_diag.log with renderer, audio, video, FPS, and config info.
+        File diagLog = new File(getFilesDir(), "diag_log");
+        if (diagLog.isFile()) {
+            try {
+                Os.setenv("PSX_DIAG_LOG", "1", true);
+            } catch (ErrnoException e) {
+                // Diagnostics only; run without them.
+            }
+        }
         // Opt-in runtime environment for diagnosis: files/runtime_env holds
         // KEY=VALUE lines (e.g. PSX_OVERLAY_DIFF=1), pushed over adb run-as.
         // Absent in normal installs; set before the native thread starts.
