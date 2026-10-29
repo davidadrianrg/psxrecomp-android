@@ -222,6 +222,7 @@ static bool g_fast_boot = false;  /* for diagnostic log */
 #if defined(__ANDROID__)
 #include <android/log.h>
 #include <sys/ioctl.h>
+#include <sys/system_properties.h>
 #include <unistd.h>
 
 /* Read end of the stdout/stderr -> logcat pipe (see below). */
@@ -1110,6 +1111,7 @@ static FILE *g_diag_log_file = nullptr;
 /* Forward declaration for Android diagnostic log (called from frame loop). */
 #if defined(__ANDROID__)
 static void android_apply_diag_log_request(void);
+static void android_diag_write_stats(FILE *df);
 #endif
 
 #if defined(__ANDROID__)
@@ -9931,6 +9933,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
             if (g_diag_log_file) {
                 double fps = (s_android_fps_frames * 1000.0) / (double)elapsed;
                 std::fprintf(g_diag_log_file, "FPS: %.1f\n", fps);
+                android_diag_write_stats(g_diag_log_file);
                 std::fflush(g_diag_log_file);
             }
             s_android_fps_t0 = now_ms;
@@ -18030,8 +18033,15 @@ static void android_apply_diag_log_request(void)
         __android_log_print(ANDROID_LOG_INFO, "psxrecomp", "diag_log fopen: %s", df ? "OK" : "FAILED");
         if (df) {
             std::fprintf(df, "=== psxrecomp diagnostic log ===\n");
-            std::fprintf(df, "Build: v0.4.4\n");
+            std::fprintf(df, "Build: v0.4.6\n");
             std::fprintf(df, "Timestamp: %lld\n", (long long)std::chrono::system_clock::now().time_since_epoch().count());
+            {
+                char model[PROP_VALUE_MAX] = {0}, soc[PROP_VALUE_MAX] = {0}, abi[PROP_VALUE_MAX] = {0};
+                __system_property_get("ro.product.model", model);
+                __system_property_get("ro.board.platform", soc);
+                __system_property_get("ro.product.cpu.abi", abi);
+                std::fprintf(df, "Device: %s | SoC: %s | ABI: %s\n", model, soc, abi);
+            }
             std::fprintf(df, "Renderer: %s\n", g_video_renderer == 1 ? "opengl" : "software");
             std::fprintf(df, "GL active: %d\n", g_gl_active);
             std::fprintf(df, "Vulkan active: %d\n", g_vk_active);
@@ -18043,7 +18053,7 @@ static void android_apply_diag_log_request(void)
             std::fprintf(df, "DRC ring_ms: %.0f, max_correction: %.3f\n", 200.0 + 300.0, 0.18);
             std::fprintf(df, "Audio buffer_ms: %d, spu_hq: %d\n", 200, 0);
             std::fprintf(df, "Fast boot: %d\n", g_fast_boot);
-            std::fprintf(df, "Android stretch: %d:%d (active=%d)\n", g_android_stretch_num, g_android_stretch_den, (g_android_stretch_num && !g_ws_native_wide && g_video_aspect_num * 3 != g_video_aspect_den * 4) ? 1 : 0);
+            std::fprintf(df, "Android stretch: %d:%d (active=%d)\n", g_android_stretch_num, g_android_stretch_den, (g_android_stretch_num && !g_ws_native_wide && g_video_aspect_num * 3 == g_video_aspect_den * 4) ? 1 : 0);
             std::fprintf(df, "Widescreen engaged: %d\n", g_ws_engaged);
             std::fprintf(df, "Render thread: %d, Present thread: %d\n", g_render_thread, g_present_thread);
             std::fflush(df);
@@ -18058,6 +18068,30 @@ static void android_apply_diag_log_request(void)
         g_diag_log_file = nullptr;
         __android_log_print(ANDROID_LOG_INFO, "psxrecomp", "diag_log stopped by user");
     }
+}
+
+/* Periodic runtime stats appended to the diag log: present cadence (GPU side)
+ * and audio DRC health. psx_audio_out_stats is defined later in this file. */
+extern "C" int psx_audio_out_stats(double *fill_ms, double *target_ms,
+                                   uint64_t *underruns,
+                                   uint64_t *overflow_drops, double *correction,
+                                   int *legacy, int *host_rate);
+
+static void android_diag_write_stats(FILE *df)
+{
+    if (!df) return;
+    PsxPresentCadence cad{};
+    psx_video_telemetry_cadence(1000, 0, &cad);
+    double fill = 0.0, target = 0.0, corr = 0.0;
+    uint64_t under = 0, over = 0;
+    int legacy = 0, host_rate = 0;
+    psx_audio_out_stats(&fill, &target, &under, &over, &corr, &legacy, &host_rate);
+    std::fprintf(df,
+        "stats: present %.1f fps (%u hitch, max %u ms) | audio fill %.0f/%.0f ms, under %llu, over %llu, corr %.3f, host %d Hz, legacy %d\n",
+        (double)cad.fps, cad.hitches, cad.max_us / 1000,
+        fill, target,
+        (unsigned long long)under, (unsigned long long)over,
+        corr, host_rate, legacy);
 }
 #endif
 
@@ -21228,7 +21262,7 @@ session_reboot:
      * the configured aspect to BE 4:3, which is exactly the case where there is
      * nothing to stretch — so 16:9 never engaged and every frame stayed 4:3. */
     if (g_android_stretch_num && !g_ws_native_wide &&
-        g_video_aspect_num * 3 != g_video_aspect_den * 4) {
+        g_video_aspect_num * 3 == g_video_aspect_den * 4) {
         gl_renderer_set_display_aspect(g_android_stretch_num, g_android_stretch_den);
         vk_renderer_set_display_aspect(g_android_stretch_num, g_android_stretch_den);
         /* The present pins every frame to 4:3 while real widescreen is not
