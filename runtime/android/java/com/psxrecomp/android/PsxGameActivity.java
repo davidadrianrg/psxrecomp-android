@@ -121,14 +121,11 @@ public class PsxGameActivity extends SDLActivity {
             }
         }
         // Set external files directory path for diagnostic log (accessible via USB/file manager).
+        // NOTE: must run AFTER super.onCreate() — the native library (libmain.so) is only
+        // loaded there; calling a native method before would throw UnsatisfiedLinkError.
         File externalFilesDir = getExternalFilesDir(null);
-        if (externalFilesDir != null) {
-            String diagLogPath = new File(externalFilesDir, "psxrecomp_diag.log").getAbsolutePath();
-            android.util.Log.i("psxrecomp", "diag_log path set to: " + diagLogPath);
-            PsxInput.nativeSetDiagLogPath(diagLogPath);
-        } else {
-            android.util.Log.w("psxrecomp", "diag_log: getExternalFilesDir returned null!");
-        }
+        final String diagLogPath = (externalFilesDir != null)
+                ? new File(externalFilesDir, "psxrecomp_diag.log").getAbsolutePath() : null;
         // Opt-in runtime environment for diagnosis: files/runtime_env holds
         // KEY=VALUE lines (e.g. PSX_OVERLAY_DIFF=1), pushed over adb run-as.
         // Absent in normal installs; set before the native thread starts.
@@ -154,6 +151,13 @@ public class PsxGameActivity extends SDLActivity {
         }
         super.onCreate(state);
         if (mLayout == null) return;  // SDL refused to start (finishing)
+        // Library is loaded now — safe to pass the external diag-log path to native.
+        if (diagLogPath != null) {
+            android.util.Log.i("psxrecomp", "diag_log path set to: " + diagLogPath);
+            PsxInput.nativeSetDiagLogPath(diagLogPath);
+        } else {
+            android.util.Log.w("psxrecomp", "diag_log: getExternalFilesDir returned null!");
+        }
         if (!new File(getFilesDir(), "game.toml").isFile()) {
             // Reached without the menu having imported a disc.
             finish();
