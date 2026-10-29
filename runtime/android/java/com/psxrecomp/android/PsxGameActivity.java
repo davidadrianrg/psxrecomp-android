@@ -124,7 +124,10 @@ public class PsxGameActivity extends SDLActivity {
         File externalFilesDir = getExternalFilesDir(null);
         if (externalFilesDir != null) {
             String diagLogPath = new File(externalFilesDir, "psxrecomp_diag.log").getAbsolutePath();
+            android.util.Log.i("psxrecomp", "diag_log path set to: " + diagLogPath);
             PsxInput.nativeSetDiagLogPath(diagLogPath);
+        } else {
+            android.util.Log.w("psxrecomp", "diag_log: getExternalFilesDir returned null!");
         }
         // Opt-in runtime environment for diagnosis: files/runtime_env holds
         // KEY=VALUE lines (e.g. PSX_OVERLAY_DIFF=1), pushed over adb run-as.

@@ -18023,11 +18023,14 @@ static void android_apply_diag_log_request(void)
     const int req = g_diag_log_request.exchange(0);
     if (!req) return;
     bool want_on = (req == 2);
+    __android_log_print(ANDROID_LOG_INFO, "psxrecomp", "diag_log request: want_on=%d, path='%s', file=%p",
+                        want_on, g_diag_log_path.empty() ? "(empty)" : g_diag_log_path.c_str(), g_diag_log_file);
     if (want_on && g_diag_log_file == nullptr && !g_diag_log_path.empty()) {
         FILE *df = std::fopen(g_diag_log_path.c_str(), "wb");
+        __android_log_print(ANDROID_LOG_INFO, "psxrecomp", "diag_log fopen: %s", df ? "OK" : "FAILED");
         if (df) {
             std::fprintf(df, "=== psxrecomp diagnostic log ===\n");
-            std::fprintf(df, "Build: v0.4.3\n");
+            std::fprintf(df, "Build: v0.4.4\n");
             std::fprintf(df, "Timestamp: %lld\n", (long long)std::chrono::system_clock::now().time_since_epoch().count());
             std::fprintf(df, "Renderer: %s\n", g_video_renderer == 1 ? "opengl" : "software");
             std::fprintf(df, "GL active: %d\n", g_gl_active);
@@ -18045,11 +18048,15 @@ static void android_apply_diag_log_request(void)
             std::fprintf(df, "Render thread: %d, Present thread: %d\n", g_render_thread, g_present_thread);
             std::fflush(df);
             g_diag_log_file = df;
+            __android_log_print(ANDROID_LOG_INFO, "psxrecomp", "diag_log started OK");
+        } else {
+            __android_log_print(ANDROID_LOG_ERROR, "psxrecomp", "diag_log fopen FAILED for path: %s", g_diag_log_path.c_str());
         }
     } else if (!want_on && g_diag_log_file) {
         std::fprintf(g_diag_log_file, "=== Session ended (user disabled) ===\n");
         std::fclose(g_diag_log_file);
         g_diag_log_file = nullptr;
+        __android_log_print(ANDROID_LOG_INFO, "psxrecomp", "diag_log stopped by user");
     }
 }
 #endif
