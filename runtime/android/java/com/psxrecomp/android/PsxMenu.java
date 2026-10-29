@@ -199,6 +199,9 @@ final class PsxMenu {
         toggle(list, "Perspective-correct textures", "Fixes textures that warp on floors and walls.",
                 "true".equals(video.get("perspective_texturing")),
                 on -> setVideo("perspective_texturing", on ? "true" : "false"));
+        toggle(list, "Diagnostic log", "Writes renderer, audio, video, FPS config to psxrecomp_diag.log in app external storage (accessible via USB/file manager).",
+                PsxInput.nativeGetDiagLog(),
+                on -> PsxInput.nativeSetDiagLog(on));
         TextView note = text(videoChanged ? "Changed: tap Restart game to apply (your place is kept)."
                 : "Display changes apply when the game restarts.", 13, videoChanged ? 0xFFFFD54F : 0xFF9090A0);
         note.setPadding(0, px(8), 0, 0);

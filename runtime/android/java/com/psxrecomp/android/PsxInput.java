@@ -56,6 +56,15 @@ public final class PsxInput {
     /** Game frames per second over the last second (0 while off or not measured yet). */
     public static native float nativeGameFps();
 
+    /** Enable/disable diagnostic log file (written to external storage, accessible via USB/file manager). */
+    public static native void nativeSetDiagLog(boolean on);
+
+    /** Whether diagnostic log is currently enabled. */
+    public static native boolean nativeGetDiagLog();
+
+    /** Set the external files directory path for the diagnostic log. */
+    public static native void nativeSetDiagLogPath(String path);
+
     /** PS1 Mouse (games with game.toml [controller] mouse = true): relative motion in mouse counts. */
     public static native void nativeMouseMotion(int dx, int dy);
 

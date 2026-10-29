@@ -120,6 +120,12 @@ public class PsxGameActivity extends SDLActivity {
                 // Diagnostics only; run without them.
             }
         }
+        // Set external files directory path for diagnostic log (accessible via USB/file manager).
+        File externalFilesDir = getExternalFilesDir(null);
+        if (externalFilesDir != null) {
+            String diagLogPath = new File(externalFilesDir, "psxrecomp_diag.log").getAbsolutePath();
+            PsxInput.nativeSetDiagLogPath(diagLogPath);
+        }
         // Opt-in runtime environment for diagnosis: files/runtime_env holds
         // KEY=VALUE lines (e.g. PSX_OVERLAY_DIFF=1), pushed over adb run-as.
         // Absent in normal installs; set before the native thread starts.

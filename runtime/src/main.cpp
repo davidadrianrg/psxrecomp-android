@@ -217,6 +217,7 @@ extern "C" void psx_game_codegen_forward_if_built(int argc, char** argv);
 
 /* game.toml [controller] mouse: port 1 holds the Sony Mouse, not a pad. */
 static bool g_port1_mouse = false;
+static bool g_fast_boot = false;  /* for diagnostic log */
 
 #if defined(__ANDROID__)
 #include <android/log.h>
@@ -1103,6 +1104,14 @@ static void fps_telemetry_toggle(void) {
     host_osd_push(enabled ? "FPS readout on" : "FPS readout off", 1500);
 }
 
+/* Diagnostic log file handle (defined here so Android JNI functions can see it). */
+static FILE *g_diag_log_file = nullptr;
+
+/* Forward declaration for Android diagnostic log (called from frame loop). */
+#if defined(__ANDROID__)
+static void android_apply_diag_log_request(void);
+#endif
+
 #if defined(__ANDROID__)
 /* FPS counter from the on-screen pad's menu ("FPS"), remembered per game by the
  * app. The UI thread posts 1 (off) or 2 (on); the emulator thread applies it
@@ -1124,6 +1133,34 @@ extern "C" JNIEXPORT jfloat JNICALL
 Java_com_psxrecomp_android_PsxInput_nativeGameFps(JNIEnv *, jclass)
 {
     return (jfloat)g_android_game_fps_x100.load() / 100.0f;
+}
+
+/* Diagnostic log file toggle (written to external storage). */
+static std::string g_diag_log_path;
+static std::atomic<int> g_diag_log_request{0};  // 0=none, 1=off, 2=on
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_psxrecomp_android_PsxInput_nativeSetDiagLog(JNIEnv *env, jclass, jboolean on)
+{
+    g_diag_log_request.store(on ? 2 : 1);
+    /* Path will be set from Java via nativeSetDiagLogPath. */
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_psxrecomp_android_PsxInput_nativeGetDiagLog(JNIEnv *, jclass)
+{
+    return g_diag_log_file != nullptr;
+}
+
+/* Set the external files directory path for the diagnostic log. */
+extern "C" JNIEXPORT void JNICALL
+Java_com_psxrecomp_android_PsxInput_nativeSetDiagLogPath(JNIEnv *env, jclass, jstring path)
+{
+    if (path) {
+        const char *utf = env->GetStringUTFChars(path, nullptr);
+        g_diag_log_path = utf;
+        env->ReleaseStringUTFChars(path, utf);
+    }
 }
 
 static void android_apply_fps_request(void)
@@ -5043,8 +5080,6 @@ struct RuntimePerfState {
 static RuntimePerfState g_runtime_perf;
 
 /* Diagnostic log file handle (opened when PSX_DIAG_LOG=1). */
-static FILE *g_diag_log_file = nullptr;
-
 static bool runtime_perf_parse_window(const char *text, uint64_t *start,
                                       uint64_t *end) {
     if (!text || !text[0]) return false;
@@ -9864,6 +9899,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
     android_apply_disc_swap();
     android_apply_state_request();
     android_apply_fps_request();
+    android_apply_diag_log_request();
     /* Time to first frame: the start menu shows a black screen until this
      * fires, so a slow boot is measurable in logcat (tag psxrecomp). */
     {
@@ -17980,6 +18016,44 @@ static void host_pause_service(void) {
     }
 }
 
+#if defined(__ANDROID__)
+/* Diagnostic log file toggle implementation (defined here after all variable declarations). */
+static void android_apply_diag_log_request(void)
+{
+    const int req = g_diag_log_request.exchange(0);
+    if (!req) return;
+    bool want_on = (req == 2);
+    if (want_on && g_diag_log_file == nullptr && !g_diag_log_path.empty()) {
+        FILE *df = std::fopen(g_diag_log_path.c_str(), "wb");
+        if (df) {
+            std::fprintf(df, "=== psxrecomp diagnostic log ===\n");
+            std::fprintf(df, "Build: v0.4.3\n");
+            std::fprintf(df, "Timestamp: %lld\n", (long long)std::chrono::system_clock::now().time_since_epoch().count());
+            std::fprintf(df, "Renderer: %s\n", g_video_renderer == 1 ? "opengl" : "software");
+            std::fprintf(df, "GL active: %d\n", g_gl_active);
+            std::fprintf(df, "Vulkan active: %d\n", g_vk_active);
+            std::fprintf(df, "Aspect ratio: %d:%d (native_wide=%d)\n", g_video_aspect_num, g_video_aspect_den, g_ws_native_wide);
+            std::fprintf(df, "Internal resolution (supersampling): %dx\n", g_video_scale);
+            std::fprintf(df, "Texture filtering: %d (0=nearest,1=bilinear,2=xbr)\n", g_video_texfilter);
+            std::fprintf(df, "Antialiasing: %s\n", g_video_aa ? "on" : "off");
+            std::fprintf(df, "Perspective texturing: %s\n", g_video_perspective_texturing ? "on" : "off");
+            std::fprintf(df, "DRC ring_ms: %.0f, max_correction: %.3f\n", 200.0 + 300.0, 0.18);
+            std::fprintf(df, "Audio buffer_ms: %d, spu_hq: %d\n", 200, 0);
+            std::fprintf(df, "Fast boot: %d\n", g_fast_boot);
+            std::fprintf(df, "Android stretch: %d:%d (active=%d)\n", g_android_stretch_num, g_android_stretch_den, (g_android_stretch_num && !g_ws_native_wide && g_video_aspect_num * 3 != g_video_aspect_den * 4) ? 1 : 0);
+            std::fprintf(df, "Widescreen engaged: %d\n", g_ws_engaged);
+            std::fprintf(df, "Render thread: %d, Present thread: %d\n", g_render_thread, g_present_thread);
+            std::fflush(df);
+            g_diag_log_file = df;
+        }
+    } else if (!want_on && g_diag_log_file) {
+        std::fprintf(g_diag_log_file, "=== Session ended (user disabled) ===\n");
+        std::fclose(g_diag_log_file);
+        g_diag_log_file = nullptr;
+    }
+}
+#endif
+
 int main(int argc, char** argv) {
 #if defined(__ANDROID__)
     android_route_stdio_to_logcat();
@@ -18955,6 +19029,7 @@ int main(int argc, char** argv) {
               if (e && e[0] && e[0] != '0') g_gl_fbo_present = 0; }
             game_entry_pc = gc.entry_pc;
             fast_boot     = gc.runtime.fast_boot;
+            g_fast_boot   = gc.runtime.fast_boot;
             bios_hle      = gc.runtime.bios_hle;
             bios_hle_keep_intro = gc.runtime.bios_hle_keep_intro;
 #if defined(RECOMP_LAUNCHER)
@@ -22431,38 +22506,6 @@ session_reboot:
      * Go back to the room; do not boot the game offline. */
     if (psx_return_to_lobby_requested() && g_netplay_from_lobby)
         goto soft_return_lobby;
-
-    /* ---- Diagnostic log file (PSX_DIAG_LOG=1 + files/diag_log on Android) ---- */
-    {
-        const char *diag_log = std::getenv("PSX_DIAG_LOG");
-        if (diag_log && diag_log[0] && diag_log[0] != '0') {
-            const char *path = std::getenv("PSX_DIAG_LOG_PATH");
-            if (!path) path = "psxrecomp_diag.log";
-            FILE *df = std::fopen(path, "wb");
-            if (df) {
-                std::fprintf(df, "=== psxrecomp diagnostic log ===\n");
-                std::fprintf(df, "Build: v0.4.1\n");
-                std::fprintf(df, "Timestamp: %lld\n", (long long)std::chrono::system_clock::now().time_since_epoch().count());
-                std::fprintf(df, "Renderer: %s\n", g_video_renderer == 1 ? "opengl" : "software");
-                std::fprintf(df, "GL active: %d\n", g_gl_active);
-                std::fprintf(df, "Vulkan active: %d\n", g_vk_active);
-                std::fprintf(df, "Aspect ratio: %d:%d (native_wide=%d)\n", g_video_aspect_num, g_video_aspect_den, g_ws_native_wide);
-                std::fprintf(df, "Internal resolution (supersampling): %dx\n", g_video_scale);
-                std::fprintf(df, "Texture filtering: %d (0=nearest,1=bilinear,2=xbr)\n", g_video_texfilter);
-                std::fprintf(df, "Antialiasing: %s\n", g_video_aa ? "on" : "off");
-                std::fprintf(df, "Perspective texturing: %s\n", g_video_perspective_texturing ? "on" : "off");
-                std::fprintf(df, "DRC ring_ms: %.0f, max_correction: %.3f\n", 200.0 + 300.0, 0.18);
-                std::fprintf(df, "Audio buffer_ms: %d, spu_hq: %d\n", 200, 0);
-                std::fprintf(df, "Fast boot: %d\n", fast_boot);
-                std::fprintf(df, "Android stretch: %d:%d (active=%d)\n", g_android_stretch_num, g_android_stretch_den, (g_android_stretch_num && !g_ws_native_wide && g_video_aspect_num * 3 != g_video_aspect_den * 4) ? 1 : 0);
-                std::fprintf(df, "Widescreen engaged: %d\n", g_ws_engaged);
-                std::fprintf(df, "Render thread: %d, Present thread: %d\n", g_render_thread, g_present_thread);
-                std::fflush(df);
-                /* Store globally for per-frame logging */
-                g_diag_log_file = df;
-            }
-        }
-    }
 
     psx_scheduler_run(&cpu);
     if (psx_return_to_lobby_requested() && g_netplay_from_lobby)
