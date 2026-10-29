@@ -21126,9 +21126,12 @@ session_reboot:
     gl_renderer_set_display_aspect(g_video_aspect_num, g_video_aspect_den);
     vk_renderer_set_display_aspect(g_video_aspect_num, g_video_aspect_den);
 #if defined(__ANDROID__)
-    /* Android stretch: only when nothing engaged real widescreen (a mod may
-     * have set a wide aspect since the clamp). Present-only; GTE untouched. */
-    if (g_android_stretch_num && g_video_aspect_num * 3 == g_video_aspect_den * 4) {
+    /* Android stretch: engaged when the player asked for a wider aspect than the
+     * 4:3 the game renders (16:9 in the menu). Present-only: the GTE and the
+     * guest keep their 4:3 frame, the present widens it. The old check required
+     * the configured aspect to BE 4:3, which is exactly the case where there is
+     * nothing to stretch — so 16:9 never engaged and every frame stayed 4:3. */
+    if (g_android_stretch_num && g_video_aspect_num * 3 != g_video_aspect_den * 4) {
         gl_renderer_set_display_aspect(g_android_stretch_num, g_android_stretch_den);
         vk_renderer_set_display_aspect(g_android_stretch_num, g_android_stretch_den);
         /* The present pins every frame to 4:3 while real widescreen is not
