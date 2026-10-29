@@ -147,7 +147,10 @@ final class PsxMenu {
         for (int s = 1; s <= 4; s++) {
             final int value = s;
             TextView b = chip(s + "×", s == scale);
-            b.setOnClickListener(v -> setVideo("supersampling", String.valueOf(value)));
+            b.setOnClickListener(v -> {
+                setVideo("supersampling", String.valueOf(value));
+                PsxInput.nativeSetInternalScale(value);   /* live, no restart */
+            });
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, px(44), 1);
             lp.setMargins(s == 1 ? 0 : px(6), px(6), 0, px(4));
             scales.addView(b, lp);
@@ -159,8 +162,8 @@ final class PsxMenu {
          * Read at game start, so it applies after a restart. */
         {
             boolean wide = "\"16:9\"".equals(video.get("aspect_ratio"));
-            list.addView(label("Aspect ratio", "16:9 stretches the picture to fill a wide screen "
-                    + "(everything looks a little wider). Restart the game to apply."));
+            list.addView(label("Aspect ratio", "16:9: campo de visión ampliado por el motor (widescreen real, " 
+                    + "sin deformar los personajes). 4:3 es el original. Reinicia el juego para aplicarlo."));
             LinearLayout aspects = new LinearLayout(activity);
             String[][] choices = { { "4:3", "\"4:3\"" }, { "16:9", "\"16:9\"" } };
             for (int i = 0; i < choices.length; i++) {
@@ -175,7 +178,10 @@ final class PsxMenu {
         }
         toggle(list, "Anti-aliased (smooth edges)",
                 "On: draw big, shrink back (soft). Off: keep the full size (sharp, like DuckStation's upscale).",
-                smooth, on -> setVideo("antialiasing", on ? "true" : "false"));
+                smooth, on -> {
+                    setVideo("antialiasing", on ? "true" : "false");
+                    PsxInput.nativeSetPostAA(on);   /* live, no restart */
+                });
         /* Texture filtering: three real modes. xBR is the edge-aware upscaler —
          * the closest thing Android has to the "HD-2D" look the PC repo got from
          * a ReShade preset. It needs the GPU renderer to show. */
@@ -184,12 +190,16 @@ final class PsxMenu {
             list.addView(label("Texture filter",
                     "Nearest: píxeles duros (pixel art). Bilinear: suaviza. xBR: escalado con bordes limpios."));
             LinearLayout rowF = new LinearLayout(activity);
-            String[][] filters = { { "Nearest", "\"nearest\"" }, { "Bilinear", "\"bilinear\"" },
-                                   { "xBR", "\"xbr\"" } };
+            String[][] filters = { { "Nearest", "\"nearest\"", "0" }, { "Bilinear", "\"bilinear\"", "1" },
+                                   { "xBR", "\"xbr\"", "3" } };
             for (int i = 0; i < filters.length; i++) {
                 final String value = filters[i][1];
+                final int live = Integer.parseInt(filters[i][2]);
                 TextView b = chip(filters[i][0], value.equals(tf));
-                b.setOnClickListener(v -> setVideo("texture_filtering", value));
+                b.setOnClickListener(v -> {
+                    setVideo("texture_filtering", value);
+                    PsxInput.nativeSetTextureFilter(live);   /* live, no restart */
+                });
                 LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, px(44), 1);
                 lp.setMargins(i == 0 ? 0 : px(6), px(6), 0, px(4));
                 rowF.addView(b, lp);

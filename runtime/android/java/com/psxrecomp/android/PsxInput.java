@@ -59,6 +59,16 @@ public final class PsxInput {
     /** Enable/disable diagnostic log file (written to external storage, accessible via USB/file manager). */
     public static native void nativeSetDiagLog(boolean on);
 
+    /** Live picture options (applied between frames, no restart):
+     *  texture filter 0=nearest, 1=bilinear, 3=xbr. */
+    public static native void nativeSetTextureFilter(int mode);
+
+    /** Live internal resolution scale (1..4). */
+    public static native void nativeSetInternalScale(int scale);
+
+    /** Live post-process antialiasing (FXAA) on/off. */
+    public static native void nativeSetPostAA(boolean on);
+
     /** Whether diagnostic log is currently enabled. */
     public static native boolean nativeGetDiagLog();
 

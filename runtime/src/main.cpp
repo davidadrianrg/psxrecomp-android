@@ -1174,6 +1174,33 @@ static void android_apply_fps_request(void)
     s_fps_last_frame = 0;
     g_android_game_fps_x100.store(0);
 }
+
+/* Live picture options (v0.4.9): the pad menu used to require a restart for
+ * every change. These are posted from the UI thread and applied between frames
+ * on the emulator thread, where the GL context lives. -1 means "no request". */
+static std::atomic<int> g_android_texfilter_req{-1};
+static std::atomic<int> g_android_scale_req{-1};
+static std::atomic<int> g_android_aa_req{-1};
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_psxrecomp_android_PsxInput_nativeSetTextureFilter(JNIEnv *, jclass, jint mode)
+{
+    g_android_texfilter_req.store(mode);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_psxrecomp_android_PsxInput_nativeSetInternalScale(JNIEnv *, jclass, jint scale)
+{
+    g_android_scale_req.store(scale);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_psxrecomp_android_PsxInput_nativeSetPostAA(JNIEnv *, jclass, jint on)
+{
+    g_android_aa_req.store(on ? 1 : 0);
+}
+
+static void android_apply_video_requests(void);   /* defined after the globals it touches */
 #endif
 
 /* Hold-to-act host hotkeys must not fire while the game window does not hold
@@ -9912,6 +9939,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
     android_apply_disc_swap();
     android_apply_state_request();
     android_apply_fps_request();
+    android_apply_video_requests();
     android_apply_diag_log_request();
     /* Time to first frame: the start menu shows a black screen until this
      * fires, so a slow boot is measurable in logcat (tag psxrecomp). */
@@ -18031,6 +18059,42 @@ static void host_pause_service(void) {
 }
 
 #if defined(__ANDROID__)
+/* Live picture options: applied here, after every global they touch, on the
+ * emulator thread (the GL context lives here). Requests come from the pad
+ * menu through the JNI setters above. */
+static void android_apply_video_requests(void)
+{
+    const int tf = g_android_texfilter_req.exchange(-1);
+    if (tf >= 0) {
+        gr_set_texture_filter(tf);
+        g_video_texfilter = tf;
+        if (g_diag_log_file) {
+            std::fprintf(g_diag_log_file, "video-change: texture_filter=%d (live)\n", tf);
+            std::fflush(g_diag_log_file);
+        }
+    }
+    const int aa = g_android_aa_req.exchange(-1);
+    if (aa >= 0) {
+        g_video_post_aa = aa ? GL_POST_AA_FXAA : GL_POST_AA_OFF;
+        if (g_gl_active) (void)gl_renderer_set_post_aa(g_video_post_aa);
+        if (g_diag_log_file) {
+            std::fprintf(g_diag_log_file, "video-change: post_aa=%d (live)\n", g_video_post_aa);
+            std::fflush(g_diag_log_file);
+        }
+    }
+    const int sc = g_android_scale_req.exchange(-1);
+    if (sc >= 1) {
+        int applied = 0;
+        if (g_gl_active) applied = gl_renderer_set_internal_scale_live(sc);
+        if (applied > 0) g_video_scale = applied;
+        if (g_diag_log_file) {
+            std::fprintf(g_diag_log_file, "video-change: internal_scale=%d applied=%d (live)\n",
+                         sc, applied);
+            std::fflush(g_diag_log_file);
+        }
+    }
+}
+
 /* Diagnostic log file toggle implementation (defined here after all variable declarations). */
 static void android_apply_diag_log_request(void)
 {
@@ -18044,7 +18108,7 @@ static void android_apply_diag_log_request(void)
         __android_log_print(ANDROID_LOG_INFO, "psxrecomp", "diag_log fopen: %s", df ? "OK" : "FAILED");
         if (df) {
             std::fprintf(df, "=== psxrecomp diagnostic log ===\n");
-            std::fprintf(df, "Build: v0.4.8\n");
+            std::fprintf(df, "Build: v0.4.9\n");
             std::fprintf(df, "Timestamp: %lld\n", (long long)std::chrono::system_clock::now().time_since_epoch().count());
             {
                 char model[PROP_VALUE_MAX] = {0}, soc[PROP_VALUE_MAX] = {0}, abi[PROP_VALUE_MAX] = {0};
@@ -18791,14 +18855,6 @@ int main(int argc, char** argv) {
             /* Keep titles with known native-wide regressions on the original
              * projection-squash + stretched-present widescreen path. */
             g_ws_native_wide = gc.ws_native_wide ? 1 : 0;
-#if defined(__ANDROID__)
-            /* Single-title Android port. The stored game.toml on the phone may
-             * predate the [widescreen] block, and a pure-2D title has no GTE
-             * projection to squash — the squash path would just stretch the
-             * picture. Always use native-wide here so a wider aspect widens the
-             * canvas instead of deforming it; at 4:3 the mode is inert. */
-            g_ws_native_wide = 1;
-#endif
             /* [widescreen] nw_hud_corners — push HUD to the true wide corners. */
             gpu_ws_set_nw_hud_corners(gc.ws_nw_hud_corners ? 1 : 0);
             /* Targeted left-HUD packet range — avoids shifting 2D scenery. */
