@@ -18154,7 +18154,7 @@ static void android_apply_diag_log_request(void)
         __android_log_print(ANDROID_LOG_INFO, "psxrecomp", "diag_log fopen: %s", df ? "OK" : "FAILED");
         if (df) {
             std::fprintf(df, "=== psxrecomp diagnostic log ===\n");
-            std::fprintf(df, "Build: v0.5.0\n");
+            std::fprintf(df, "Build: v0.5.1\n");
             std::fprintf(df, "Timestamp: %lld\n", (long long)std::chrono::system_clock::now().time_since_epoch().count());
             {
                 char model[PROP_VALUE_MAX] = {0}, soc[PROP_VALUE_MAX] = {0}, abi[PROP_VALUE_MAX] = {0};
@@ -18178,6 +18178,15 @@ static void android_apply_diag_log_request(void)
             std::fprintf(df, "Android stretch: %d:%d (active=%d)\n", g_android_stretch_num, g_android_stretch_den, (g_android_stretch_num && !g_ws_native_wide && g_video_aspect_num * 3 == g_video_aspect_den * 4) ? 1 : 0);
             std::fprintf(df, "Widescreen engaged: %d\n", g_ws_engaged);
             std::fprintf(df, "Render thread: %d, Present thread: %d\n", g_render_thread, g_present_thread);
+            {
+                /* Display timing: host refresh, vsync request/effective swap
+                 * interval, whether vsync owns the clock. This is the data that
+                 * tells a 40 fps plateau (vsync quantization on a 120 Hz panel)
+                 * apart from a genuinely slow frame. */
+                char timing[4096];
+                psx_display_timing_json(timing, (int)sizeof(timing));
+                std::fprintf(df, "Display timing: %s\n", timing);
+            }
             std::fflush(df);
             g_diag_log_file = df;
             /* Also turn on the runtime cadence lines (guest vs pacer vs GPU ms,
