@@ -670,6 +670,9 @@ static GLint         s_present_uTex = -1, s_present_uUvRect = -1;
 static GLint         s_present_uTexSize = -1, s_present_uSharpScale = -1;
 static GLint         s_present_uSharp = -1;
 static GLint         s_present_uGamma = -1;
+static GLint         s_present_uFade = -1;
+/* Wide-margin fade for the present quad: {outer_px, inner_px, enable, 0}. */
+static float         s_present_fade[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 /* Host-side presentation state. The shader applies this only to the source
  * image being presented; overlays and already-composed hold-last images set
  * the uniform back to the identity explicitly. */
@@ -1719,6 +1722,7 @@ static const char *PRESENT_FS =
     "uniform vec2 u_sharp_scale;\n"
     "uniform int  u_sharp;\n"
     "uniform float u_gamma;\n"
+    "uniform vec4 u_fade;   /* x=outer px, y=inner px, z=enable, w=unused */\n"
     "uniform int  u_chroma;   /* [video] fmv_chroma_smoothing (24-bit frames) */\n"
     PSX_SCANLINE_UNIFORMS
     /* Catmull-Rom bicubic via 9 bilinear taps. Sharper than plain bilinear at
@@ -1834,7 +1838,15 @@ static const char *INTERP_FS =
     "  vec4 c=mix(prev,curr,alpha);\n"
     "  c.rgb=psx_scanline(c.rgb, v_uv.y);\n"
     "  if (u_gamma > 0.0 && u_gamma != 1.0) c.rgb=pow(max(c.rgb, vec3(0.0)), vec3(1.0/u_gamma));\n"
-    "  frag=c;\n"
+    /* Wide-margin fade (Android): alpha ramps from 0 at u_fade.x to 1 at
+     * u_fade.y across the WINDOW x, so a margin filled with a stretched edge
+     * column dissolves into the black drawable instead of ending in a seam. */
+    "  float fade = 1.0;\n"
+    "  if (u_fade.z > 0.5) {\n"
+    "    float d = u_fade.y - u_fade.x;\n"
+    "    fade = clamp((gl_FragCoord.x - u_fade.x) / (abs(d) > 1e-6 ? d : 1e-6), 0.0, 1.0);\n"
+    "  }\n"
+    "  frag = vec4(c.rgb, c.a * fade);\n"
     "}\n";
 
 /* Geometry: position in VRAM pixels (draw offset already applied by gpu.c),
@@ -6750,6 +6762,8 @@ int gl_renderer_init_context(SDL_Window *win) {
                 p_glGetUniformLocation(s_present_prog, "u_sharp");
             s_present_uGamma =
                 p_glGetUniformLocation(s_present_prog, "u_gamma");
+            s_present_uFade =
+                p_glGetUniformLocation(s_present_prog, "u_fade");
             s_present_uChroma =
                 p_glGetUniformLocation(s_present_prog, "u_chroma");
             s_present_uScanline =
@@ -10406,6 +10420,14 @@ static void present_target_quad(GLuint tex, float tex_w, float tex_h,
     p_glUseProgram(s_present_prog);
     p_glUniform1i(s_present_uTex, 0);
     present_set_gamma(s_present_uGamma, apply_gamma);
+    if (s_present_uFade >= 0)
+        p_glUniform4f(s_present_uFade, s_present_fade[0], s_present_fade[1],
+                      s_present_fade[2], s_present_fade[3]);
+    const int fade_on = s_present_fade[2] > 0.5f;
+    if (fade_on) {
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    }
     /* The rasterized path already renders at the internal scale, so it has no
      * low-res source to reconstruct — keep the plain sample, unless the
      * internal image is larger than the output: then resolve its area. */
@@ -10455,6 +10477,7 @@ static void present_target_quad(GLuint tex, float tex_w, float tex_h,
     p_glBindVertexArray(s_present_vao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     p_glBindVertexArray(0);
+    if (fade_on) glDisable(GL_BLEND);
     p_glUseProgram(0);
 }
 
@@ -10864,13 +10887,27 @@ static int present_wide_fbo_impl(int disp_x, int disp_y, int disp_h, int linear)
             if (left_w > 0 && center_w > 0 && right_w > 0) {
                 const float tw = (float)g_wide_w * wext;
                 const float th = (float)VRAM_H * wext;
+                /* Black backdrop: the margin fades dissolve into it. */
+                glClearColor(0.f, 0.f, 0.f, 1.f);
+                glClear(GL_COLOR_BUFFER_BIT);
+                /* Left margin: opaque at its inner edge, transparent outward. */
+                s_present_fade[0] = (float)lx;
+                s_present_fade[1] = (float)(lx + left_w);
+                s_present_fade[2] = 1.0f;
                 present_target_quad(tex, tw, th, g_wide_off, disp_y, 2, disp_h,
                                     linear, lx, ly, left_w, lh, 1, 1, s_out_scale);
+                /* Play area: 1:1, no fade. */
+                s_present_fade[2] = 0.0f;
                 present_target_quad(tex, tw, th, g_wide_off, disp_y, native_w, disp_h,
                                     linear, lx + left_w, ly, center_w, lh, 1, 1, s_out_scale);
+                /* Right margin: opaque inward, transparent outward. */
+                s_present_fade[0] = (float)(lx + lw);
+                s_present_fade[1] = (float)(lx + left_w + center_w);
+                s_present_fade[2] = 1.0f;
                 present_target_quad(tex, tw, th, g_wide_off + native_w - 2, disp_y, 2, disp_h,
                                     linear, lx + left_w + center_w, ly, right_w, lh,
                                     1, 1, s_out_scale);
+                s_present_fade[2] = 0.0f;
                 filled = 1;
             }
         }
