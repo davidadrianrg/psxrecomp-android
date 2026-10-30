@@ -156,28 +156,25 @@ final class PsxMenu {
             scales.addView(b, lp);
         }
         list.addView(scales);
-        /* Aspect ratio: applied live (no restart). 4:3 original; 16:9 widened
-         * canvas (native-wide: the engine renders beyond the 4:3 frame, some
-         * scenes stream tiles a moment late near the edges); 16:9 filled
-         * (present-only stretch, no pop-in but the picture is stretched). */
+        /* Aspect ratio: 4:3 original or 16:9 filled (present-only stretch).
+         * Applied live; the widened-canvas mode was removed for 1.0: a 2D
+         * tile-streamed title only redraws the reveal margins when its own
+         * camera gets there, which looked broken. */
         {
             String ar = video.get("aspect_ratio");
             boolean wide = "\"16:9\"".equals(ar);
-            String nw = readSectionKey("[widescreen]", "native_wide");
-            int mode = !wide ? 1 : ("true".equals(nw) ? 2 : 3);
-            list.addView(label("Aspect ratio", "4:3 original · 16:9 ampliado (renderiza más, puede tardar "
-                    + "en cargar el borde) · 16:9 relleno (estira). Se aplica al momento."));
+            list.addView(label("Aspect ratio", "4:3 original · 16:9 relleno (estira la imagen "
+                    + "para llenar la pantalla). Se aplica al momento."));
             LinearLayout aspects = new LinearLayout(activity);
             aspects.setOrientation(LinearLayout.VERTICAL);
-            String[][] choices = { { "4:3 (original)", "1" }, { "16:9 ampliado (renderiza más)", "2" },
-                                   { "16:9 relleno (estira)", "3" } };
+            String[][] choices = { { "4:3 (original)", "1" }, { "16:9 (estirado)", "3" } };
             for (int i = 0; i < choices.length; i++) {
                 final int value = Integer.parseInt(choices[i][1]);
-                TextView b = chip(choices[i][0], value == mode);
+                TextView b = chip(choices[i][0], (value == 3) == wide);
                 b.setOnClickListener(v -> {
                     PsxInput.nativeSetAspect(value);                 /* live */
                     setSectionKey("[video]", "aspect_ratio", value == 1 ? "\"4:3\"" : "\"16:9\"");
-                    setSectionKey("[widescreen]", "native_wide", value == 2 ? "true" : "false");
+                    setSectionKey("[widescreen]", "native_wide", "false");
                 });
                 LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                         LinearLayout.LayoutParams.MATCH_PARENT, px(44));
@@ -219,9 +216,6 @@ final class PsxMenu {
         toggle(list, "Perspective-correct textures", "Fixes textures that warp on floors and walls.",
                 "true".equals(video.get("perspective_texturing")),
                 on -> { setVideo("perspective_texturing", on ? "true" : "false"); videoChanged = true; });
-        toggle(list, "Diagnostic log", "Writes renderer, audio, video, FPS config to psxrecomp_diag.log in app external storage (accessible via USB/file manager).",
-                PsxInput.nativeGetDiagLog(),
-                on -> PsxInput.nativeSetDiagLog(on));
         TextView note = text(videoChanged
                 ? "Renderer / perspective need Restart game (your place is kept)."
                 : "Filtro, resolución, AA y aspect se aplican al momento.", 13,

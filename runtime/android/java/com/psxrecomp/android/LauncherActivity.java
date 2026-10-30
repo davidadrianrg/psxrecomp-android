@@ -146,6 +146,18 @@ public class LauncherActivity extends Activity {
         hint.setPadding(0, (int) (16 * dp), 0, 0);
         root.addView(hint, wrap());
 
+        TextView version = new TextView(this);
+        version.setText("Alundra Android " + appVersion());
+        version.setTextColor(0xFF4A4A52);
+        version.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+        version.setGravity(Gravity.CENTER);
+        version.setPadding(0, (int) (22 * dp), 0, 0);
+        root.addView(version, wrap());
+
+        styleButton(resume, 0xFF26262E);
+        styleButton(play, 0xFF2F6B3A);
+        styleButton(select, 0xFF26262E);
+
         setContentView(root);
     }
 
@@ -342,6 +354,27 @@ public class LauncherActivity extends Activity {
             return;
         }
         startGame();
+    }
+
+    /** Rounded, flat buttons (the default Material button looks dated). */
+    private void styleButton(Button b, int color) {
+        android.graphics.drawable.GradientDrawable g =
+                new android.graphics.drawable.GradientDrawable();
+        g.setColor(color);
+        g.setCornerRadius(16 * getResources().getDisplayMetrics().density);
+        b.setBackground(g);
+        b.setTextColor(Color.WHITE);
+        b.setAllCaps(false);
+        b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
+        b.setStateListAnimator(null);
+    }
+
+    private String appVersion() {
+        try {
+            return getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+        } catch (Exception e) {
+            return "";
+        }
     }
 
     private void pickFiles() {
