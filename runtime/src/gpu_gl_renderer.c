@@ -10846,8 +10846,38 @@ static int present_wide_fbo_impl(int disp_x, int disp_y, int disp_h, int linear)
     /* The surface is allocated at its own scale (s_wide_as), the level. */
     const float wext = (wide_as > s_out_scale && s_out_scale >= 1)
                            ? (float)wide_as / (float)s_out_scale : 1.0f;
-    present_target_quad(tex, (float)g_wide_w * wext, (float)VRAM_H * wext,
-                        0, disp_y, g_wide_w, disp_h, linear, lx, ly, lw, lh, 1, 1, s_out_scale);
+    /* Margin edge-fill (Android, 2026-10-30). A tile-streamed 2D title only
+     * redraws the reveal margins when its own camera logic gets there, so the
+     * wide surface held stale tiles there and the picture showed a slowly
+     * updating strip. Present the canonical centre 1:1 and fill each margin by
+     * stretching the outermost texel column of that centre: no hole, no
+     * distortion of the play area, and the strip disappears the moment the game
+     * paints real content over it (that content is in the margins, not shown).
+     * Falls back to the plain full-wide blit when there is no margin. */
+    {
+        const int native_w = g_wide_w - 2 * g_wide_off;
+        int filled = 0;
+        if (native_w > 4 && g_wide_off > 0 && lw > 16) {
+            const int left_w  = (int)((int64_t)lw * g_wide_off / g_wide_w);
+            const int center_w = (int)((int64_t)lw * native_w / g_wide_w);
+            const int right_w = lw - left_w - center_w;
+            if (left_w > 0 && center_w > 0 && right_w > 0) {
+                const float tw = (float)g_wide_w * wext;
+                const float th = (float)VRAM_H * wext;
+                present_target_quad(tex, tw, th, g_wide_off, disp_y, 2, disp_h,
+                                    linear, lx, ly, left_w, lh, 1, 1, s_out_scale);
+                present_target_quad(tex, tw, th, g_wide_off, disp_y, native_w, disp_h,
+                                    linear, lx + left_w, ly, center_w, lh, 1, 1, s_out_scale);
+                present_target_quad(tex, tw, th, g_wide_off + native_w - 2, disp_y, 2, disp_h,
+                                    linear, lx + left_w + center_w, ly, right_w, lh,
+                                    1, 1, s_out_scale);
+                filled = 1;
+            }
+        }
+        if (!filled)
+            present_target_quad(tex, (float)g_wide_w * wext, (float)VRAM_H * wext,
+                                0, disp_y, g_wide_w, disp_h, linear, lx, ly, lw, lh, 1, 1, s_out_scale);
+    }
     postfx_note_source(fbo, tex, (float)g_wide_w * wext, (float)VRAM_H * wext,
                       0, disp_y, g_wide_w, disp_h);
     if (!s_hiw && wide_center_is_canonical() && g_wide_w > 2 * g_wide_off)
