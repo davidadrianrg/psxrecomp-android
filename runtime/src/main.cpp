@@ -5183,7 +5183,7 @@ static void runtime_perf_force_enabled(void) {
     if (g_runtime_perf.enabled) return;
     g_runtime_perf.frequency = SDL_GetPerformanceFrequency();
     if (!g_runtime_perf.frequency) g_runtime_perf.frequency = 1;
-    if (g_runtime_perf.interval_ms == 0) g_runtime_perf.interval_ms = 2000;
+    g_runtime_perf.interval_ms = 2000;   /* one cadence line every 2 s */
     g_runtime_perf.enabled = true;
     g_runtime_perf.initialized = true;
 }
@@ -5512,7 +5512,7 @@ static void runtime_perf_diag_tick() {
     static uint64_t last_up[6] = {0};
     static uint64_t last_overlay_load_us = 0;
     if (!g_runtime_perf.enabled) return;
-
+    if (!g_runtime_perf.frequency) g_runtime_perf.frequency = SDL_GetPerformanceFrequency();
     uint64_t now = SDL_GetPerformanceCounter();
     const uint64_t interval_ticks =
         g_runtime_perf.frequency * (uint64_t)g_runtime_perf.interval_ms / 1000u;
@@ -5545,6 +5545,10 @@ static void runtime_perf_diag_tick() {
 
     const double dt = (double)(current.counter - last.counter) /
                       (double)g_runtime_perf.frequency;
+    if (!(dt > 0.0)) {   /* zero/NaN frequency or same tick: skip this line */
+        last = current;
+        return;
+    }
     FILE *cad_dst = g_diag_log_file ? g_diag_log_file : stdout;
     std::fprintf(cad_dst,
         "psxrecomp: runtime cadence: guest=%.2f Hz, spu=%.1f Hz, "
@@ -9966,8 +9970,10 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
     }
     /* Android FPS counter: counted here, on the frame loop, instead of on the
      * desktop title-bar telemetry block — some present paths (the GPU renderer
-     * with the present thread) never reach it and the overlay read 0. */
-    if (s_fps_telemetry_enabled) {
+     * with the present thread) never reach it and the overlay read 0.
+     * Always counted (not gated on the FPS toggle): the pad overlay polls it
+     * and used to show "--" when the toggle was off. */
+    {
         static uint32_t s_android_fps_t0 = 0;
         static uint32_t s_android_fps_frames = 0;
         const uint32_t now_ms = SDL_GetTicks();
@@ -18154,7 +18160,7 @@ static void android_apply_diag_log_request(void)
         __android_log_print(ANDROID_LOG_INFO, "psxrecomp", "diag_log fopen: %s", df ? "OK" : "FAILED");
         if (df) {
             std::fprintf(df, "=== psxrecomp diagnostic log ===\n");
-            std::fprintf(df, "Build: v0.5.1\n");
+            std::fprintf(df, "Build: v0.5.2\n");
             std::fprintf(df, "Timestamp: %lld\n", (long long)std::chrono::system_clock::now().time_since_epoch().count());
             {
                 char model[PROP_VALUE_MAX] = {0}, soc[PROP_VALUE_MAX] = {0}, abi[PROP_VALUE_MAX] = {0};
@@ -21878,7 +21884,7 @@ session_reboot:
                  * of breaking into noise; when the game reaches full speed the
                  * correction returns to ~0 on its own. */
                 cfg.kp             = 0.40;
-                cfg.max_correction = 0.30;
+                cfg.max_correction = 0.40;   /* 60 Hz target at 40 fps = 67% */
                 cfg.slew_pp_per_s  = 3.0;
 #endif
                 if (rab_init(&s_drc, &cfg) == 0) s_drc_ready = true;

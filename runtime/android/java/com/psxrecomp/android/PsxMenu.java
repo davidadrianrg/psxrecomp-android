@@ -134,7 +134,7 @@ final class PsxMenu {
         for (int i = 0; i < rchoices.length; i++) {
             final String value = rchoices[i][1];
             TextView b = chip(rchoices[i][0], (i == 1) == gpu);
-            b.setOnClickListener(v -> setVideo("renderer", value));
+            b.setOnClickListener(v -> { setVideo("renderer", value); videoChanged = true; });
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, px(44), 1);
             lp.setMargins(i == 0 ? 0 : px(6), px(6), 0, px(4));
             renderers.addView(b, lp);
@@ -168,7 +168,9 @@ final class PsxMenu {
             list.addView(label("Aspect ratio", "4:3 original · 16:9 ampliado (renderiza más, puede tardar "
                     + "en cargar el borde) · 16:9 relleno (estira). Se aplica al momento."));
             LinearLayout aspects = new LinearLayout(activity);
-            String[][] choices = { { "4:3", "1" }, { "16:9 ampliado", "2" }, { "16:9 relleno", "3" } };
+            aspects.setOrientation(LinearLayout.VERTICAL);
+            String[][] choices = { { "4:3 (original)", "1" }, { "16:9 ampliado (renderiza más)", "2" },
+                                   { "16:9 relleno (estira)", "3" } };
             for (int i = 0; i < choices.length; i++) {
                 final int value = Integer.parseInt(choices[i][1]);
                 TextView b = chip(choices[i][0], value == mode);
@@ -177,8 +179,9 @@ final class PsxMenu {
                     setSectionKey("[video]", "aspect_ratio", value == 1 ? "\"4:3\"" : "\"16:9\"");
                     setSectionKey("[widescreen]", "native_wide", value == 2 ? "true" : "false");
                 });
-                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, px(44), 1);
-                lp.setMargins(i == 0 ? 0 : px(6), px(6), 0, px(4));
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT, px(44));
+                lp.setMargins(0, i == 0 ? 0 : px(6), 0, px(4));
                 aspects.addView(b, lp);
             }
             list.addView(aspects);
@@ -215,12 +218,14 @@ final class PsxMenu {
         }
         toggle(list, "Perspective-correct textures", "Fixes textures that warp on floors and walls.",
                 "true".equals(video.get("perspective_texturing")),
-                on -> setVideo("perspective_texturing", on ? "true" : "false"));
+                on -> { setVideo("perspective_texturing", on ? "true" : "false"); videoChanged = true; });
         toggle(list, "Diagnostic log", "Writes renderer, audio, video, FPS config to psxrecomp_diag.log in app external storage (accessible via USB/file manager).",
                 PsxInput.nativeGetDiagLog(),
                 on -> PsxInput.nativeSetDiagLog(on));
-        TextView note = text(videoChanged ? "Changed: tap Restart game to apply (your place is kept)."
-                : "Display changes apply when the game restarts.", 13, videoChanged ? 0xFFFFD54F : 0xFF9090A0);
+        TextView note = text(videoChanged
+                ? "Renderer / perspective need Restart game (your place is kept)."
+                : "Filtro, resolución, AA y aspect se aplican al momento.", 13,
+                videoChanged ? 0xFFFFD54F : 0xFF9090A0);
         note.setPadding(0, px(8), 0, 0);
         list.addView(note);
         if (videoChanged) row(list, "Restart game now", this::confirmRestart);
@@ -408,7 +413,6 @@ final class PsxMenu {
             File tmp = new File(gameToml().getPath() + ".tmp");
             write(tmp, out.toString());
             if (!tmp.renameTo(gameToml())) throw new IOException("rename failed");
-            videoChanged = true;
             if (root != null) root.post(this::refresh);
         } catch (IOException e) {
             new AlertDialog.Builder(activity).setMessage("Could not save the setting: " + e.getMessage())
@@ -437,7 +441,6 @@ final class PsxMenu {
             File tmp = new File(gameToml().getPath() + ".tmp");
             write(tmp, out.toString());
             if (!tmp.renameTo(gameToml())) throw new IOException("rename failed");
-            videoChanged = true;
             if (root != null) root.post(this::refresh);
         } catch (IOException e) {
             new AlertDialog.Builder(activity).setMessage("Could not save the setting: " + e.getMessage())
