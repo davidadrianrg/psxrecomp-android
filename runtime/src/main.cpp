@@ -18190,7 +18190,7 @@ static void android_apply_diag_log_request(void)
         __android_log_print(ANDROID_LOG_INFO, "psxrecomp", "diag_log fopen: %s", df ? "OK" : "FAILED");
         if (df) {
             std::fprintf(df, "=== psxrecomp diagnostic log ===\n");
-            std::fprintf(df, "Build: v1.0.0\n");
+            std::fprintf(df, "Build: v1.0.1\n");
             std::fprintf(df, "Timestamp: %lld\n", (long long)std::chrono::system_clock::now().time_since_epoch().count());
             {
                 char model[PROP_VALUE_MAX] = {0}, soc[PROP_VALUE_MAX] = {0}, abi[PROP_VALUE_MAX] = {0};
@@ -19697,6 +19697,22 @@ int main(int argc, char** argv) {
      * the launcher can introspect the real card files. The same default is used
      * by the runtime below. */
     if (memcard_dir.empty()) memcard_dir = default_memcard_dir(argv[0]);
+#if defined(__ANDROID__)
+    /* Saves (memory cards AND save states) live in the app's external files
+     * dir, <external>/saves, so a file manager or USB can reach them. Java sets
+     * the path before the native thread starts (Android/data/<pkg>/files/saves);
+     * an explicit absolute path here wins over the exe-dir default above. */
+    if (const char *saves = std::getenv("PSX_SAVES_DIR")) {
+        if (saves[0]) {
+            std::error_code ec;
+            std::filesystem::create_directories(saves, ec);
+            if (!ec) {
+                memcard_dir = std::filesystem::path(saves);
+                std::fprintf(stdout, "psxrecomp: saves dir = %s\n", saves);
+            }
+        }
+    }
+#endif
 
     /* The game's OWN native OPTION settings (game_options.toml, next to
      * game.toml) — persisted across launches, kept separate from game.toml

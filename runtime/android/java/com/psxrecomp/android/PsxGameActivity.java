@@ -120,6 +120,17 @@ public class PsxGameActivity extends SDLActivity {
                 // Diagnostics only; run without them.
             }
         }
+        // Saves (memory cards + save states) go to <external>/saves, reachable
+        // from a file manager or USB. Set before super.onCreate() so the native
+        // thread reads it at startup.
+        File savesDir = new File(getExternalFilesDir(null), "saves");
+        try {
+            //noinspection ResultOfMethodCallIgnored
+            savesDir.mkdirs();
+            Os.setenv("PSX_SAVES_DIR", savesDir.getAbsolutePath(), true);
+        } catch (ErrnoException e) {
+            // Falls back to the internal app dir.
+        }
         // Set external files directory path for diagnostic log (accessible via USB/file manager).
         // NOTE: must run AFTER super.onCreate() — the native library (libmain.so) is only
         // loaded there; calling a native method before would throw UnsatisfiedLinkError.
