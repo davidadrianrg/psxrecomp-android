@@ -5042,7 +5042,7 @@ static void sdl_audio_pump(bool discard_output = false) {
                 s_ff_last_counter = now_c;
                 s_ff_last_frames = s_drc.stats.pushed_frames;
             } else if (freq_c && now_c > s_ff_last_counter &&
-                       (double)(now_c - s_ff_last_counter) / (double)freq_c >= 1.0) {
+                       (double)(now_c - s_ff_last_counter) / (double)freq_c >= 0.5) {
                 const double secs = (double)(now_c - s_ff_last_counter) / (double)freq_c;
                 const double produced =
                     (double)(s_drc.stats.pushed_frames - s_ff_last_frames) / secs;
@@ -18190,7 +18190,7 @@ static void android_apply_diag_log_request(void)
         __android_log_print(ANDROID_LOG_INFO, "psxrecomp", "diag_log fopen: %s", df ? "OK" : "FAILED");
         if (df) {
             std::fprintf(df, "=== psxrecomp diagnostic log ===\n");
-            std::fprintf(df, "Build: v0.6.1\n");
+            std::fprintf(df, "Build: v0.6.2\n");
             std::fprintf(df, "Timestamp: %lld\n", (long long)std::chrono::system_clock::now().time_since_epoch().count());
             {
                 char model[PROP_VALUE_MAX] = {0}, soc[PROP_VALUE_MAX] = {0}, abi[PROP_VALUE_MAX] = {0};
@@ -21912,7 +21912,12 @@ session_reboot:
                  * a slow frame — empties it and the bridge fades to silence:
                  * that is the "choppy audio". Keep the target (latency) and give
                  * the ring room to absorb a stall. */
-                cfg.ring_ms     = cfg.target_ms + 300.0;
+                /* 800 ms ring (target 200): the frame rate swings between ~47
+                 * and 60 fps on this class of device, so the producer's rate
+                 * moves by ~20% within seconds. A wider ring absorbs the swing
+                 * instead of overflowing (dropped samples = clicks) and then
+                 * emptying (fades). */
+                cfg.ring_ms     = cfg.target_ms + 600.0;
                 /* The guest does not always run at 50 Hz: on a phone it can sit at
                  * 43 fps (86% of real time), so the SPU feeds fewer samples than
                  * the device consumes. With the stock +/-0.5% clamp the servo can
