@@ -934,12 +934,21 @@ static DirtyRect s_up_rects[UP_RECTS_MAX];
 static int       s_up_nrects = 0;
 static uint64_t  s_rt_up_diag[6];
 
+#if defined(__ANDROID__)
+/* Defined in main.cpp: 1 while the in-game diagnostic log file is open. The env
+ * var is read once at boot, but the player toggles the log mid-session. */
+extern int psx_android_diag_active(void);
+#endif
+
 static int runtime_upload_diag_enabled(void) {
     static int enabled = -1;
     if (enabled < 0) {
         const char *e = getenv("PSX_RUNTIME_PERF_DIAG");
         enabled = e && e[0] && e[0] != '0';
     }
+#if defined(__ANDROID__)
+    if (!enabled && psx_android_diag_active()) return 1;
+#endif
     return enabled;
 }
 

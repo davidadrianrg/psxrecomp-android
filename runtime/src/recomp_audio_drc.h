@@ -109,6 +109,12 @@ double rab_fill_ms(const rab_bridge *b);
 
 void rab_get_stats(const rab_bridge *b, rab_stats *out);
 
+/* Set the integral term directly (feed-forward). A caller that measures the
+ * producer's real rate (source frames pushed per second / host rate - 1) can
+ * lock the resampler on it at once instead of waiting for the P loop to walk
+ * there, which is what makes a 20-30% production deficit oscillate. */
+void rab_set_integral(rab_bridge *b, double corr);
+
 #ifdef __cplusplus
 }
 #endif
@@ -371,6 +377,13 @@ void rab_pull(rab_bridge *b, int16_t *out, int frames) {
 }
 
 void rab_get_stats(const rab_bridge *b, rab_stats *out) { *out = b->stats; }
+
+void rab_set_integral(rab_bridge *b, double corr) {
+    const double c = b->cfg.max_correction;
+    if (corr > c) corr = c;
+    if (corr < -c) corr = -c;
+    b->corr_i = corr;
+}
 
 #endif /* RECOMP_AUDIO_DRC_IMPL */
 #endif /* RECOMP_AUDIO_DRC_H */

@@ -1108,6 +1108,12 @@ static void fps_telemetry_toggle(void) {
 /* Diagnostic log file handle (defined here so Android JNI functions can see it). */
 static FILE *g_diag_log_file = nullptr;
 
+#if defined(__ANDROID__)
+/* Read by gpu_gl_renderer.c to collect the per-frame GPU cost counters while
+ * the player has the diagnostic log on (the env-var guard is read at boot). */
+extern "C" int psx_android_diag_active(void) { return g_diag_log_file != nullptr; }
+#endif
+
 /* Forward declaration for Android diagnostic log (called from frame loop). */
 #if defined(__ANDROID__)
 static void android_apply_diag_log_request(void);
@@ -5022,6 +5028,30 @@ static void sdl_audio_pump(bool discard_output = false) {
         psx_sdl_audio_lock(sdl_audio_device);
         rab_push(&s_drc, sdl_audio_buf, frames);
         psx_sdl_audio_unlock(sdl_audio_device);
+        /* Feed-forward for the resampler (2026-10-30): once a second, measure
+         * how much source audio the emulator really produces and hand the
+         * ratio to the DRC's integral term. The P loop alone walked toward a
+         * 20-40% deficit with overshoot, which was audible as a wobbling
+         * pitch; this locks the ratio the moment it is known. */
+        {
+            static uint64_t s_ff_last_frames = 0;
+            static uint64_t s_ff_last_counter = 0;
+            const uint64_t now_c = SDL_GetPerformanceCounter();
+            const uint64_t freq_c = SDL_GetPerformanceFrequency();
+            if (!s_ff_last_counter) {
+                s_ff_last_counter = now_c;
+                s_ff_last_frames = s_drc.stats.pushed_frames;
+            } else if (freq_c && now_c > s_ff_last_counter &&
+                       (double)(now_c - s_ff_last_counter) / (double)freq_c >= 1.0) {
+                const double secs = (double)(now_c - s_ff_last_counter) / (double)freq_c;
+                const double produced =
+                    (double)(s_drc.stats.pushed_frames - s_ff_last_frames) / secs;
+                if (s_drc.cfg.host_rate > 0.0 && produced > 0.0)
+                    rab_set_integral(&s_drc, produced / s_drc.cfg.host_rate - 1.0);
+                s_ff_last_counter = now_c;
+                s_ff_last_frames = s_drc.stats.pushed_frames;
+            }
+        }
     }
 }
 
@@ -18160,7 +18190,7 @@ static void android_apply_diag_log_request(void)
         __android_log_print(ANDROID_LOG_INFO, "psxrecomp", "diag_log fopen: %s", df ? "OK" : "FAILED");
         if (df) {
             std::fprintf(df, "=== psxrecomp diagnostic log ===\n");
-            std::fprintf(df, "Build: v0.6.0\n");
+            std::fprintf(df, "Build: v0.6.1\n");
             std::fprintf(df, "Timestamp: %lld\n", (long long)std::chrono::system_clock::now().time_since_epoch().count());
             {
                 char model[PROP_VALUE_MAX] = {0}, soc[PROP_VALUE_MAX] = {0}, abi[PROP_VALUE_MAX] = {0};
@@ -21910,7 +21940,7 @@ session_reboot:
                  * while the gentle P only catches fast changes. The previous
                  * kp=0.40 oscillated between -0.20 and -0.36 (audible warble). */
                 cfg.kp             = 0.10;
-                cfg.ki_per_s       = 0.60;
+                cfg.ki_per_s       = 0.0;   /* the pump feeds the integral directly */
                 cfg.err_lp_ms      = 250.0;
                 cfg.max_correction = 0.40;
                 cfg.slew_pp_per_s  = 2.0;
