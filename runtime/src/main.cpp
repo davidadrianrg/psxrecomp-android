@@ -18160,7 +18160,7 @@ static void android_apply_diag_log_request(void)
         __android_log_print(ANDROID_LOG_INFO, "psxrecomp", "diag_log fopen: %s", df ? "OK" : "FAILED");
         if (df) {
             std::fprintf(df, "=== psxrecomp diagnostic log ===\n");
-            std::fprintf(df, "Build: v0.5.2\n");
+            std::fprintf(df, "Build: v0.5.3\n");
             std::fprintf(df, "Timestamp: %lld\n", (long long)std::chrono::system_clock::now().time_since_epoch().count());
             {
                 char model[PROP_VALUE_MAX] = {0}, soc[PROP_VALUE_MAX] = {0}, abi[PROP_VALUE_MAX] = {0};
@@ -18232,6 +18232,28 @@ static void android_diag_write_stats(FILE *df)
         fill, target,
         (unsigned long long)under, (unsigned long long)over,
         corr, host_rate, legacy);
+
+    /* GPU cost since the previous line (the runtime perf cadence lines proved
+     * unreliable on Android: SDL's perf counter frequency came back unusable).
+     * ms/s spent inside the GL renderer tells a GPU-bound frame from a
+     * CPU-bound one without depending on that path. */
+    static uint64_t last_up[6] = {0, 0, 0, 0, 0, 0};
+    static uint64_t last_t = 0;
+    uint64_t up[6] = {0, 0, 0, 0, 0, 0};
+    gl_renderer_runtime_diag(up);
+    const uint64_t nowc = SDL_GetPerformanceCounter();
+    const uint64_t freq = SDL_GetPerformanceFrequency();
+    if (last_t && freq && nowc > last_t) {
+        const double secs = (double)(nowc - last_t) / (double)freq;
+        if (secs >= 0.05) {
+            const double cpu  = (double)(up[3] - last_up[3]) * 1000.0 / (double)freq / secs;
+            const double tex  = (double)(up[4] - last_up[4]) * 1000.0 / (double)freq / secs;
+            const double draw = (double)(up[5] - last_up[5]) * 1000.0 / (double)freq / secs;
+            std::fprintf(df, "gpu: cpu=%.1f tex=%.1f draw=%.1f ms/s\n", cpu, tex, draw);
+        }
+    }
+    last_t = nowc;
+    for (int i = 0; i < 6; i++) last_up[i] = up[i];
 }
 #endif
 
@@ -21883,9 +21905,15 @@ session_reboot:
                  * the rate the game really runs (slightly deeper pitch) instead
                  * of breaking into noise; when the game reaches full speed the
                  * correction returns to ~0 on its own. */
-                cfg.kp             = 0.40;
-                cfg.max_correction = 0.40;   /* 60 Hz target at 40 fps = 67% */
-                cfg.slew_pp_per_s  = 3.0;
+                /* P + integral: the integral locks the steady production
+                 * deficit (45 fps of 60 = -25%) so the pitch stops wobbling,
+                 * while the gentle P only catches fast changes. The previous
+                 * kp=0.40 oscillated between -0.20 and -0.36 (audible warble). */
+                cfg.kp             = 0.10;
+                cfg.ki_per_s       = 0.60;
+                cfg.err_lp_ms      = 250.0;
+                cfg.max_correction = 0.40;
+                cfg.slew_pp_per_s  = 2.0;
 #endif
                 if (rab_init(&s_drc, &cfg) == 0) s_drc_ready = true;
             }
